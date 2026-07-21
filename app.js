@@ -1,4 +1,7 @@
 /* Orbit is dependency-free. Every canvas document follows JSON Canvas 1.0; hierarchy and cameras live in a local workspace sidecar. */
+import { IndexedDbVault } from "./storage/indexeddb-vault.js";
+import { WorkspaceStore, hasWorkspace } from "./storage/workspace-vault.js";
+
 const COLORS = {
   "1": "#ff7b78", "2": "#efa66a", "3": "#e9d56b",
   "4": "#7ee0a1", "5": "#64cbd0", "6": "#a78bfa"
@@ -93,6 +96,8 @@ let activeAppView = "canvas";
 let spaceDown = false;
 let saveTimer;
 const aiCardRuntime=new Map();
+let vaultStore=null;
+let vaultReady=null;
 
 const canvas = $("#canvas");
 const world = $("#world");
@@ -149,6 +154,7 @@ function saveCurrentCanvasState(){
 }
 function persistWorkspace(){
   saveCurrentCanvasState();workspace.activeId=currentCanvasId;localStorage.setItem(WORKSPACE_KEY,JSON.stringify(workspace));localStorage.setItem("orbit-canvas-v1",JSON.stringify(workspace.canvases[workspace.rootId].document));localStorage.setItem("orbit-title",workspace.canvases[workspace.rootId].title);try{window.orbitLifeStore?.syncCanvasRecord(workspace.canvases[currentCanvasId]);}catch(error){console.warn("Could not update the life database index",error);}
+  if(vaultStore){vaultStore.save(workspace).catch(error=>console.warn("Could not persist the canonical vault workspace",error));}
 }
 function scheduleSave() {
   $("#saveState").innerHTML = "<i></i> Saving…";
@@ -157,6 +163,31 @@ function scheduleSave() {
     persistWorkspace();
     $("#saveState").innerHTML = "<i></i> Saved locally";
   }, 350);
+}
+
+// Phase 4b transitional bridge (ADR-0001): populate the canonical IndexedDB vault
+// from the local-storage workspace and keep it in sync on every save. The app
+// still boots synchronously from local storage, so this adds no startup
+// regression; vault-first reads (adopting the vault as source of truth) land in
+// the verified async-startup cutover. If the vault is unavailable the app
+// continues unchanged on local storage.
+async function adoptVaultWorkspace(){
+  try{
+    const vault=new IndexedDbVault("orbit-vault");
+    const store=new WorkspaceStore(vault);
+    if(await hasWorkspace(vault)){
+      // Refresh the store's hash bookkeeping from the vault so dual-writes use
+      // correct expectedHash preconditions. We do not adopt the loaded documents
+      // yet (that is the cutover); local storage remains the boot source.
+      await store.load();
+    }else{
+      await store.migrate(workspace);
+    }
+    vaultStore=store;
+    window.orbitVaultStore=store;
+  }catch(error){
+    console.warn("Canonical vault workspace unavailable; continuing with local storage",error);
+  }
 }
 
 function colorValue(color) { return COLORS[color] || color || "#737b87"; }
@@ -891,3 +922,5 @@ window.addEventListener("orbit:life-store-ready",refreshLifeViews);
 
 render();
 setTimeout(fitView,50);
+vaultReady=adoptVaultWorkspace();
+window.orbitVaultReady=vaultReady;

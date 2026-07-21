@@ -40,7 +40,8 @@ Offline shell caching does not replace Orbit persistence:
 
 ```text
 Cache API                 application code and static assets
-Workspace localStorage    canvases, hierarchy, cameras, JD metadata
+Workspace localStorage    canvases, hierarchy, cameras, JD metadata (boot source)
+IndexedDB vault           canonical .canvas/.md mirror (Phase 4b bridge; ADR-0001)
 SQLite kvvfs              tasks and temporal/queryable life data
 sessionStorage            provider key by default
 ```
@@ -85,7 +86,9 @@ Useful probes:
 await window.orbitOfflineReady
 await navigator.serviceWorker.ready
 await caches.keys()
-(await caches.open("orbit-shell-v1")).keys()
+(await caches.open("orbit-shell-v2")).keys()
+await window.orbitVaultReady // Phase 4b canonical vault bridge
+window.orbitVaultStore
 ```
 
 The production OPFS SQLite adapter is a separate concern. It will require a Worker and appropriate cross-origin-isolation headers; GitHub Pages currently cannot provide those headers.
