@@ -479,6 +479,8 @@
     right: 0;
     z-index: 30;
     display: grid;
+    max-height: calc(100dvh - 160px);
+    overflow-y: auto;
     gap: 2px;
     min-width: 250px;
     border: 2px solid var(--balaur-color-outline);
