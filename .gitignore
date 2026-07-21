@@ -2,3 +2,4 @@
 
 # Local agent / tooling state — never deploy these.
 .superpowers/
+.pi/npm/
