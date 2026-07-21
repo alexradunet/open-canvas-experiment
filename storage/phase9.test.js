@@ -50,6 +50,18 @@ test("list returns all files sorted and filters by prefix", async () => {
   assert.deepEqual((await vault.list("canvases/")).map((m) => m.path), ["canvases/root.canvas"]);
 });
 
+test("create commit never replaces a destination created after preflight", async () => {
+  class RaceVault extends FsVault {
+    async _atomicWrite(path, text, existing, expectedHash) {
+      if (!existing) await fsp.writeFile(this._abs(path), "external", { flag: "wx" });
+      return super._atomicWrite(path, text, existing, expectedHash);
+    }
+  }
+  const raced = new RaceVault(dir);
+  await assert.rejects(() => raced.write("f.md", "local", { expectedHash: null }), ConflictError);
+  assert.equal(await raced.read("f.md"), "external");
+});
+
 test("expectedHash preconditions enforce optimistic concurrency", async () => {
   const meta = await vault.write("f.md", "one", { expectedHash: null });
   await vault.write("f.md", "two", { expectedHash: meta.hash });
@@ -84,6 +96,20 @@ test("changesSince reports operations after a revision", async () => {
   await vault.remove("a.md");
   const changes = vault.changesSince(rev);
   assert.deepEqual(changes.map((c) => `${c.operation}:${c.path}`), ["create:b.md", "remove:a.md"]);
+});
+
+test("restore rolls back the old root when activation fails", async () => {
+  class FailingActivationVault extends FsVault {
+    async _rename(from, to) {
+      if (from.includes(".orbit-restore-") && to === this.root) throw new Error("activation failed");
+      return super._rename(from, to);
+    }
+  }
+  await vault.write("keep.md", "old");
+  const failing = new FailingActivationVault(dir);
+  await assert.rejects(() => failing.restore({ format: "orbit-vault-snapshot", files: [{ path: "new.md", text: "new" }] }), /activation failed/);
+  assert.equal(await failing.read("keep.md"), "old");
+  assert.equal(await failing.exists("new.md"), false);
 });
 
 test("snapshot and restore round-trip the whole vault", async () => {

@@ -1,3 +1,5 @@
+> Historical implementation plan. Superseded by the canonical-files-only v1 architecture and current design documentation; retained for provenance only.
+
 # Balaur Cartographer’s Tavern Rebrand Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.

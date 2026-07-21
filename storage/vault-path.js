@@ -22,8 +22,25 @@ export function byteLength(str) {
 }
 
 // Case-fold + NFC key used to detect collisions even on case-sensitive hosts.
+// Unicode default case folding (not locale-sensitive lower-casing). NFKC folds
+// compatibility characters and the explicit mappings cover the notable full
+// folds that JavaScript's toLowerCase does not expand (for example sharp s).
+const FULL_CASE_FOLDS = new Map([
+  ["ß", "ss"], ["ẞ", "ss"], ["ς", "σ"], ["ŉ", "ʼn"], ["İ", "i\u0307"],
+  ["ǰ", "j\u030c"], ["ΐ", "ι\u0308\u0301"], ["ΰ", "υ\u0308\u0301"], ["և", "եւ"],
+  ["ẖ", "h\u0331"], ["ẗ", "t\u0308"], ["ẘ", "w\u030a"], ["ẙ", "y\u030a"],
+  ["ẚ", "aʾ"], ["ỉ", "i\u0309"], ["ỏ", "o\u0309"], ["ử", "ư\u0309"],
+]);
+
+export function unicodeCaseFold(value) {
+  return [...String(value).normalize("NFKC").toLowerCase()]
+    .map((char) => FULL_CASE_FOLDS.get(char) || char).join("")
+    .replace(/ς/g, "σ")
+    .normalize("NFC");
+}
+
 export function caseFoldKey(path) {
-  return String(path).normalize("NFC").replace(/\\/g, "/").toLowerCase();
+  return unicodeCaseFold(String(path).replace(/\\/g, "/"));
 }
 
 function trimTrailing(segment) {
@@ -105,15 +122,19 @@ export function normalizePath(input) {
 // throws so callers can surface a diagnostic. Use before adapter calls.
 export function assertSafePath(path) {
   const raw = String(path ?? "");
+  if (raw.includes("\\")) throw new PathError(`Path contains a backslash: ${raw}`, { code: "PATH_FORBIDDEN_CHAR" });
   if (SCHEME_RE.test(raw)) throw new PathError(`Path has a URL scheme: ${raw}`, { code: "PATH_SCHEME" });
-  const slashed = raw.replace(/\\/g, "/");
+  const slashed = raw;
   if (slashed.startsWith("/")) throw new PathError(`Path is absolute: ${raw}`, { code: "PATH_ABSOLUTE" });
-  const parts = slashed.split("/").filter((p) => p !== "");
+  if (slashed === "" || slashed.endsWith("/") || slashed.includes("//")) throw new PathError(`Path has an empty component: ${raw}`, { code: "PATH_EMPTY_COMPONENT" });
+  const parts = slashed.split("/");
   if (parts.length === 0) throw new PathError("Path is empty", { code: "PATH_EMPTY" });
   for (const part of parts) {
     if (part === "." || part === "..") throw new PathError(`Path contains "${part}"`, { code: "PATH_TRAVERSAL" });
     if (part !== part.normalize("NFC")) throw new PathError(`Path component is not NFC-normalized: ${part}`, { code: "PATH_NOT_NORMALIZED" });
+    FORBIDDEN_RE.lastIndex = 0;
     if (FORBIDDEN_RE.test(part)) { FORBIDDEN_RE.lastIndex = 0; throw new PathError(`Path component has forbidden characters: ${part}`, { code: "PATH_FORBIDDEN_CHAR" }); }
+    FORBIDDEN_RE.lastIndex = 0;
     if (/[\\]/.test(part)) throw new PathError(`Path component has a backslash: ${part}`, { code: "PATH_FORBIDDEN_CHAR" });
     if (trimTrailing(part) !== part) throw new PathError(`Path component has trailing space/period: ${part}`, { code: "PATH_TRAILING" });
     if (isDeviceName(part)) throw new PathError(`Path component is a reserved device name: ${part}`, { code: "PATH_DEVICE_NAME" });

@@ -118,10 +118,27 @@ test("updateEvent patches fields preservation-first", async () => {
   assert.equal(index.allEvents()[0].startsAt, "2026-07-25T16:00:00.000Z");
 });
 
+test("updateEvent validates patched event values before writing", async () => {
+  const { events, vault } = setup();
+  const { path } = await events.createEvent({ id: "event-x", title: "X", startsAt: "2026-07-25T14:00:00.000Z", localDate: "2026-07-25", timezone: "UTC" });
+  const before = await vault.read(path);
+  await assert.rejects(() => events.updateEvent("event-x", { timezone: "Not/AZone" }), /Invalid IANA timezone/);
+  assert.equal(await vault.read(path), before, "invalid timezone must not be written");
+});
+
 test("updateEvent rejects unknown fields", async () => {
   const { events } = setup();
   await events.createEvent({ id: "event-x", title: "X", startsAt: "2026-07-25T14:00:00.000Z", localDate: "2026-07-25", timezone: "UTC" });
   await assert.rejects(() => events.updateEvent("event-x", { bogus: 1 }), /Unknown event field/);
+});
+
+test("deleteEvent uses the source hash and leaves stale files on conflict", async () => {
+  const { events, vault, index } = setup();
+  const { id, path } = await events.createEvent({ id: "event-x", title: "X", startsAt: "2026-07-25T14:00:00.000Z", localDate: "2026-07-25", timezone: "UTC" });
+  await vault.write(path, (await vault.read(path)).replace(/^title:.*$/m, "title: Changed"));
+  await assert.rejects(() => events.deleteEvent(id), /Hash mismatch|WRITE_CONFLICT|conflict/i);
+  assert.equal(await vault.exists(path), true);
+  assert.equal(index.allEvents().length, 1);
 });
 
 test("deleteEvent removes the file and the index entry", async () => {

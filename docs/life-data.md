@@ -1,168 +1,242 @@
-# Life data: JSON Canvas + SQLite
+# Life data: canonical files and a disposable in-memory index
 
-Balaur separates portable spatial documents from queryable life-management state.
+Balaur's canonical-files-only v1 stores life data as readable files in a vault. JSON Canvas remains the spatial/document format; Markdown carries the operational fields that JSON Canvas does not define. The runtime index is derived state.
 
 ## Ownership
 
-JSON Canvas remains authoritative for visible content and structure:
-
-- Markdown notes and task/habit markers
-- node geometry
-- edges and groups
-- file/link nodes
-- nested-canvas portals
-- Johnny Decimal hierarchy
-
-**Direction (ADR-0001):** canonical Markdown files own operational and temporal state, and SQLite is a disposable, rebuildable projection over those files:
-
-- task workflow, priority, due dates, and scheduling
-- habit definitions and immutable daily check-in events
-- journal date indexes
-- calendar events
-- canvas/node search indexes (derived from `.canvas` files)
-- activity history
-
-**Currently:** SQLite (schema version 1) is still the authoritative owner of this state, and database rows reference document content by the composite identity `(canvas_id, node_id)`. Migration 2 adds the rebuildable index infrastructure below; the typed-table ownership flip ships with the task slice (plan Phase 5). No SQLite-only field is ever added to a JSON Canvas node.
-
-## Current browser backend
-
-The static GitHub Pages build vendors official SQLite Wasm `3.53.0` and opens `:localStorage:` through SQLite's `kvvfs`:
-
 ```text
-SQLite Wasm
-  └── kvvfs
-      └── browser localStorage
+.orbit/workspace.json  hierarchy, canvas metadata, cameras, JD metadata
+canvases/*.canvas       canonical JSON Canvas 1.0 documents
+tasks/*.md              task definitions and workflow state
+habits/*.md             habit definitions
+habit-logs/YYYY/*.md    append-only daily habit check-in events
+journal/YYYY/*.md       journal entries by local date
+events/*.md             calendar events
+widgets/*.html          sandboxed file-node attachments
+MemoryIndex             disposable runtime projection
 ```
 
-This is a starter backend which works without server headers, a package install, or a build step. It is synchronous, main-thread only, and constrained by the browser's localStorage quota. The footer reports the active SQLite version and backend state.
+The vault adapters share the same logical layout:
 
-The intended production browser backend is SQLite in OPFS from a dedicated Worker. The official OPFS build requires `Cross-Origin-Opener-Policy` and `Cross-Origin-Embedder-Policy`, which GitHub Pages cannot configure. Tauri can use native SQLite behind the same store interface.
+- `IndexedDbVault` is the browser default;
+- `FsVault` is the Node filesystem reference adapter; and
+- `MemoryVault` is the deterministic test adapter.
 
-Clearing site data deletes both the workspace and the local database. Whole-space exports are therefore important backups.
+The vault is the only source of truth. `MemoryIndex` can be deleted and rebuilt from the vault without losing meaningful data. A persistent index, including SQLite, is deferred; it is not loaded or required by v1. OPFS-backed SQLite Wasm would require COOP/COEP headers that GitHub Pages cannot provide, which is why the default projection is in-memory JavaScript. Upgrading a legacy localStorage profile is a clean break and drops its old task workflow state.
 
-## Schema
+Identity is separate from location: an entity's immutable `orbit-id` is its identity, its path is a locator, and a JSON Canvas node ID is a placement. A task can therefore have zero, one, or many `file`-node placements.
 
-Schema migrations use `PRAGMA user_version`. Version 1 contains:
+## Workspace sidecar and canvases
 
-- `canvases`
-- `canvas_nodes`
-- `tasks`
-- `habits`
-- `habit_entries`
-- `journal_entries`
-- `calendar_events`
-- `activity_log`
-
-Version 2 (ADR-0001, plan §11.2) is additive and retains migration 1 byte-for-byte. It adds the rebuildable index infrastructure:
-
-- `source_files` — one row per canonical file (path, media type, entity type/id, content hash, size, parse status/error)
-- `entity_placements` — derived `(canvas_id, node_id) -> entity_id` from canvas file nodes
-- `index_diagnostics` — parse, duplicate-ID, and missing-reference problems (re-derived on rebuild)
-- `index_state` — index generation and last-indexed vault revision
-- `habit_events` — immutable habit check-in events (latest per `(habit_id, local_date)` is a projection)
-
-Version 2 also adds nullable `source_path`/`source_hash` columns (and `journal_entries.orbit_id`) so file-canonical rows can coexist with legacy rows during the transition; file-canonical rows are identified by `source_path IS NOT NULL`. The destructive typed-table rebuild (dropping `canvas_id`/`node_id`/`block_key`) ships in a later migration with the task slice.
-
-Dates without times use `YYYY-MM-DD`. Instants use ISO 8601 strings and calendar records retain an IANA timezone.
-
-## Runtime API
-
-Initialization is asynchronous:
-
-```js
-const life = await window.orbitLifeReady;
-life.stats();
-```
-
-The initialized instance is also available as `window.orbitLifeStore`.
-
-```js
-life.upsertTask({
-  id: "task-review-budget",
-  canvasId: "jd-canvas-41",
-  nodeId: "jd-item-41-01",
-  title: "Review monthly budget",
-  status: "scheduled",
-  scheduledOn: "2026-07-24",
-  dueOn: "2026-07-31",
-  priority: 1
-});
-
-life.upsertHabit({
-  id: "habit-strength",
-  canvasId: "jd-canvas-21",
-  nodeId: "jd-item-21-01",
-  title: "Strength training",
-  schedule: { frequency: "weekly", weekdays: [1, 3, 5] },
-  target: 3,
-  unit: "sessions"
-});
-
-life.recordHabit({
-  habitId: "habit-strength",
-  localDate: "2026-07-21",
-  status: "done",
-  value: 1
-});
-```
-
-The API is intentionally repository-like so an OPFS or native adapter can replace the current backend without changing canvas components.
-
-## Task projection and Today
-
-Task cards carry an inert, portable marker:
-
-```md
-<!-- orbit:task task-123 -->
-# Review monthly budget
-```
-
-On database startup, Balaur reconciles every marker with the `tasks` table. New task cards write both layers: the text node is appended to the selected JSON Canvas document and task metadata is committed to SQLite. The inspector updates status, priority, planned date, and due date through `LifeStore.updateTask()`.
-
-The Today screen is a live SQL-backed projection grouped into:
-
-- scheduled for the local date;
-- overdue and still actionable;
-- inbox and next tasks;
-- tasks completed on the local date.
-
-Completing a task from either its canvas card or Today writes one database state change and refreshes both projections.
-
-## Index reconciliation
-
-At startup, Balaur scans every workspace canvas into the `canvases` and `canvas_nodes` tables. Normal saves update the active canvas index. The index stores titles and content hashes, not the full document as a second source of truth.
-
-Task, habit, calendar, journal, and activity tables contain non-rebuildable state and must be backed up.
-
-## Rebuildable file-canonical index (ADR-0001)
-
-`storage/life-indexer.js` projects canonical `.md` and `.canvas` files from a `VaultStore` into the version-2 index tables. It is infrastructure for the file-canonical migration; the running app does not use it yet (UI integration lands in a later phase).
-
-- `buildSourceRecord()` parses one file into a `source_files` record (entity type/id, content hash, parse status). Untyped Markdown notes are valid; only malformed Orbit-marked files are errors.
-- `LifeIndexer.indexFile()` applies one file's projection atomically: clear the prior projection for the path, upsert `source_files`, insert the typed row(s), and record/clear diagnostics (plan §11.4).
-- `LifeIndexer.rebuild()` does a full cold rebuild: parse all files, replace derived tables, detect duplicate `orbit-id`s, derive placements by scanning canvas file nodes, flag missing references, and mark the index generation complete (plan §12.1). It is idempotent.
-- `LifeIndexer.reconcileWarm(fromRevision)` reindexes only paths changed since a vault revision (plan §12.2).
-- Deleting an entity removes its projection and dangling placements and records a missing-reference diagnostic (plan §11.5).
-
-The indexer depends on an injectable index port. `storage/memory-index.js` is the reference implementation used by the Node tests (`storage/phase3.test.js`); `SqliteLifeStore` implements the same port for the browser (browser-verified). Deleting the SQLite index and rebuilding from files must reproduce the same projected rows.
-
-## Backup and restore
-
-Whole-space `.balaur.json` exports include:
+The sidecar is `.orbit/workspace.json`:
 
 ```json
 {
   "format": "orbit-workspace",
-  "workspace": {},
-  "lifeData": {
-    "schemaVersion": 1,
-    "tasks": [],
-    "habits": [],
-    "habit_entries": [],
-    "journal_entries": [],
-    "calendar_events": []
+  "version": 2,
+  "rootId": "canvas-root",
+  "activeId": "canvas-root",
+  "johnnyDecimal": { "enabled": false, "entries": {} },
+  "canvases": {
+    "canvas-root": {
+      "id": "canvas-root",
+      "title": "Life OS",
+      "path": "canvases/root.canvas",
+      "parentId": null,
+      "portalNodeId": null,
+      "camera": { "x": 80, "y": 55, "zoom": 0.78 }
+    }
   }
 }
 ```
 
-The export uses normalized JSON rather than a raw SQLite binary. This keeps backups inspectable and portable between the kvvfs prototype, future OPFS SQLite, IndexedDB fallback, and native SQLite.
+The sidecar stores metadata only. Each `path` must be a unique, safe `canvases/<name>.canvas` path; the root is always `canvases/root.canvas`. Parent and portal references must be valid and acyclic. The corresponding file must pass `isCanvas()` or it is loaded as a read-only repair placeholder with raw content retained.
+
+A `.canvas` file must contain only standard JSON Canvas 1.0 structures. The shared validator requires `nodes` and `edges` arrays, unique non-empty IDs, standard node types (`text`, `file`, `link`, `group`), valid finite positive geometry, valid colors and optional fields, and edge endpoints that reference nodes. Canvas and edge IDs are globally unique within the document.
+
+## Frontmatter contract
+
+Orbit writes a constrained YAML-compatible frontmatter block. Values are quoted strings, finite numbers, booleans, enum tokens, valid dates/instants, or simple flow arrays. The parser knows only Orbit-owned flat fields. Unknown keys, comments, ordering, indentation, BOM, line endings, and Markdown body are preserved. Repository updates patch named fields and replace only the body bytes after the closing delimiter.
+
+Every Orbit entity uses:
+
+```md
+---
+orbit-schema: 1
+orbit-type: <type>
+...
+---
+Markdown body remains ordinary user content.
+```
+
+`orbit-schema` must be `1`; newer schemas are read-only and unsupported schemas are rejected. Required identity and timestamps are validated rather than inferred.
+
+### Tasks: `tasks/*.md`
+
+```md
+---
+orbit-schema: 1
+orbit-type: task
+orbit-id: "task-a1b2c3"
+title: "Review monthly budget"
+status: next
+priority: 1
+scheduled-on: "2026-07-22"
+due-on: "2026-07-25"
+completed-at: null
+estimate-minutes: 45
+recurrence: null
+created-at: "2026-07-21T09:00:00Z"
+updated-at: "2026-07-21T09:00:00Z"
+---
+Optional context and Markdown body.
+```
+
+Required fields are `orbit-id`, `title`, `status`, `created-at`, and `updated-at`. Task statuses are `inbox`, `next`, `scheduled`, `waiting`, `done`, and `cancelled`. `scheduled-on` expresses scheduling intent; `due-on` is a separate deadline. `completed-at`, priority, estimate, recurrence, and dates may be null when allowed by the contract.
+
+`FileTaskRepository` creates, updates, completes, reopens, and deletes task files. It writes a standard `file` node for each requested placement and uses content-hash preconditions for edits and removals. Removing a placement does not remove the task; deleting everywhere removes all placements before the canonical file.
+
+### Habits: `habits/*.md`
+
+```md
+---
+orbit-schema: 1
+orbit-type: habit
+orbit-id: "habit-strength"
+title: "Strength training"
+frequency: weekly
+weekdays: [1, 3, 5]
+target: 3
+unit: "sessions"
+archived-at: null
+created-at: "2026-07-21T09:00:00Z"
+updated-at: "2026-07-21T09:00:00Z"
+---
+Habit context.
+```
+
+Required fields are `orbit-id`, `title`, `frequency`, `created-at`, and `updated-at`. Frequencies are `daily`, `weekly`, and `monthly`. Weekdays are unique integers from 1 through 7. Check-ins are historical events, not an overwritten counter.
+
+### Habit logs: `habit-logs/YYYY/YYYY-MM-DD.md`
+
+A daily log has a small identity frontmatter block and inert, constrained event comments in its body:
+
+```md
+---
+orbit-schema: 1
+orbit-type: habit-log
+local-date: "2026-07-21"
+---
+<!-- orbit:habit-entry id=entry-a1 habit=habit-strength status=done value=1 at=2026-07-21T06:30:00Z -->
+```
+
+Each `habit-entry` requires unique `id`, `habit`, `status`, `value`, and `at` attributes. Status is `done`, `skipped`, or `missed`; value is finite; `at` is a valid ISO instant. Malformed markers invalidate the source file rather than creating a malformed projection row. `FileHabitRepository.checkIn()` appends events and derives the local date using the intended timezone.
+
+### Journals: `journal/YYYY/YYYY-MM-DD.md`
+
+```md
+---
+orbit-schema: 1
+orbit-type: journal
+orbit-id: "journal-2026-07-21"
+local-date: "2026-07-21"
+created-at: "2026-07-21T09:00:00Z"
+updated-at: "2026-07-21T09:00:00Z"
+---
+Journal body.
+```
+
+The required fields are `orbit-id`, `local-date`, `created-at`, and `updated-at`. `FileJournalRepository` keeps one canonical file per local date and preserves frontmatter/body formatting on updates.
+
+### Calendar events: `events/*.md`
+
+```md
+---
+orbit-schema: 1
+orbit-type: calendar-event
+orbit-id: "event-a1b2c3"
+title: "Dentist"
+starts-at: "2026-07-22T14:00:00+01:00"
+ends-at: "2026-07-22T15:00:00+01:00"
+local-date: "2026-07-22"
+timezone: "Europe/London"
+all-day: false
+source: orbit
+created-at: "2026-07-21T09:00:00Z"
+updated-at: "2026-07-21T09:00:00Z"
+---
+Event notes.
+```
+
+Required fields are `orbit-id`, `title`, `starts-at`, `local-date`, `timezone`, `created-at`, and `updated-at`. Instants must be real ISO 8601 timestamps; timezones must be valid IANA names. The local date is explicit and is not obtained by slicing a UTC timestamp.
+
+## Date and time conventions
+
+These conventions apply to every repository and projection:
+
+- local dates are `YYYY-MM-DD` and must be real calendar dates;
+- instants are ISO 8601 strings with a timezone offset or `Z`;
+- calendar timezones are IANA timezone names; and
+- `scheduled-on` and `due-on` are independent task fields.
+
+`localDateForInstant()` uses `Intl.DateTimeFormat` with the intended IANA timezone. Tests cover invalid dates, invalid instants, invalid zones, and timezone-boundary behavior; the browser boundary still needs browser verification.
+
+## Runtime index
+
+`LifeIndexer` builds source records for every vault file. It records media type, path, content hash, byte size, entity type/id, parse status, and diagnostics. Untyped Markdown and opaque attachments can remain valid source files; malformed Orbit entities and invalid canvases are diagnostics.
+
+Typed projections include:
+
+- tasks with workflow and temporal fields;
+- habits with definition fields;
+- journals keyed by local date;
+- calendar events keyed by `orbit-id`;
+- immutable habit-entry rows from daily log markers; and
+- placements derived by scanning canvas `file` nodes that reference entity files.
+
+Duplicate `orbit-id` files never produce a winner: every conflicting typed projection and placement is suppressed and each conflicting path receives a `DUPLICATE_ID` diagnostic. Missing file-node targets, parse failures, and index drift are diagnostics. `index-integrity.js` compares canonical files, hashes, typed rows, placements, and diagnostics and can purge/rebuild the index.
+
+Cold rebuild uses `LifeIndexer.rebuild()`. Warm updates use vault revisions and `LifeIndexer.reconcileWarm()`, preserving old-path ancestry for moves and applying each projection through `MemoryIndex.transaction()`. `MemoryIndex.transaction()` rolls back the complete projection, diagnostics, and state for that projection on failure. The browser exposes `window.orbitCanvas.rebuildIndex()` as a recovery command.
+
+`LifeQuery` is the application-facing facade. It returns consistent camelCase objects for:
+
+- open/today tasks, with status/date filters and stable priority/date/title ordering;
+- tasks by status;
+- habits with latest daily state and a done streak;
+- a journal for one local date; and
+- events in a half-open instant range.
+
+The index is not exported as a separate source of truth and can be reconstructed from files at every boot.
+
+## Vault writes and conflicts
+
+All adapters support safe normalized paths, case-fold collision detection, content hashes, revisions, and optimistic `expectedHash` preconditions. `FsVault` rejects symlinked components and uses serialized writes, temporary siblings, no-replace hard-link commits, and restore rollback protection. `IndexedDbVault` keeps file contents, metadata, changes, and case-fold keys in IndexedDB; the Service Worker never caches those records.
+
+Frontmatter and body updates are preservation-first. If an external edit changes the expected hash, the repository refuses the write instead of silently overwriting it. Missing or malformed canvas files are read-only until repaired explicitly.
+
+## Version-2 whole-space backup
+
+`storage/workspace-backup.js` exports a deterministic bundle shaped like:
+
+```json
+{
+  "format": "orbit-workspace",
+  "version": 2,
+  "exportedAt": "2026-07-21T09:00:00Z",
+  "workspace": { "format": "orbit-workspace", "version": 2, "rootId": "canvas-root", "canvases": {} },
+  "files": [
+    { "path": "canvases/root.canvas", "mediaType": "application/jsoncanvas+json", "text": "{\"nodes\":[],\"edges\":[]}\n" },
+    { "path": "tasks/review-monthly-budget-task-a1b2c3.md", "mediaType": "text/markdown", "text": "---\\n..." }
+  ]
+}
+```
+
+The sidecar is in `workspace`; files are raw text so frontmatter and line endings remain inspectable. Export validates every canvas and reports unreadable files. Import rejects version-1 bundles, requires an empty staging vault, validates every path/canvas/file-node reference/entity before the first write, writes files with `expectedHash: null`, and leaves activation to the caller after indexing succeeds.
+
+A single `.canvas` export is interoperable JSON Canvas but is not a complete life backup when its file references are not bundled. A version-2 whole-space bundle is the portable recovery format.
+
+## Verification status
+
+The explicit storage command in `AGENTS.md` passes **165 Node tests** across phase1, phase2, phase3, phase4, phase4-backup, phase5, phase7, phase8, phase9, phase10, and phase-query. This verifies the platform-neutral codecs, repositories, adapters, indexing, queries, backup validation, and audit logic.
+
+Browser verification is still pending for IndexedDB persistence/restore and quota behavior, vault-first boot and first-render timing, task create/complete/Today interaction, export/import round-trip in a real profile, offline reload and cache upgrades, timezone boundaries in browser locale behavior, and repair affordances for malformed files.

@@ -1,124 +1,93 @@
-# Proposed architecture
+# Balaur architecture
 
-## Recommendation
+Balaur is a standards-first, local-first web application with no UI framework, build step, package install, or runtime dependency. Native ES modules, the DOM, CSS, Pointer Events, SVG, Canvas, WebGL, IndexedDB, and Service Workers provide the platform. The static site can run on GitHub Pages and is also structured around adapters that can support Node tooling and a future desktop shell.
 
-Use a **standards-first web application with no UI framework**, package the same static application with **Tauri 2** for desktop, and optionally use Capacitor on mobile.
+## Ownership model
 
-The platform already provides the important primitives: ES modules, Custom Elements, DOM templates, CSS custom properties, Pointer Events, SVG, Canvas 2D, WebGL, IndexedDB, Service Workers, Web Workers, `dialog`, `popover`, and `EventTarget`. An infinite canvas benefits from direct control over these APIs rather than a virtual DOM. Tauri adds filesystem access, menus, notifications, and SQLite without replacing the browser renderer.
-
-The static app now starts from `main.js` as an ES module and registers a same-origin Service Worker. Its versioned application-shell cache includes local modules, styles, fonts, SQLite Wasm, icons, and the sample widget. Runtime requests use the network when available and fall back to this cache when offline; cross-origin AI provider requests are never intercepted. The web app manifest makes the same shell installable without introducing a build pipeline. Lifecycle and validation details are in [offline.md](offline.md).
-
-## Core principle: separate document truth from indexed views
-
-JSON Canvas should be the portable document and spatial layer, but not the only application database.
-
-A task needs fields that JSON Canvas 1.0 does not define: due date, status, recurrence, completion time, reminders, and calendar links. Putting those fields directly on a node would produce useful but non-standard extensions. Encoding all metadata in Markdown is portable but expensive and fragile to query.
-
-A practical model is:
-
-1. `.canvas` documents remain valid JSON Canvas 1.0.
-2. Stable node IDs link nodes to records in a local SQLite index.
-3. Tasks can originate from Markdown checkboxes and be indexed automatically.
-4. Optional app metadata is stored in a sidecar file or database, never required to open the canvas.
-5. Calendar, Today, and task-list screens are projections of the same indexed records, not separate sources of truth.
-
-For sync, use immutable operations and a document revision rather than writing whole files from several clients concurrently.
-
-### Implemented storage bridge
-
-The browser prototype now vendors official SQLite Wasm and initializes a versioned life database in `storage/life-store.js`. On GitHub Pages it uses SQLite's `:localStorage:` kvvfs because the host cannot provide the COOP/COEP headers required by the official OPFS worker build. The database indexes canvases and nodes and provides repositories for tasks, habits, habit entries, journals, calendar events, and activity history. Portable task-marker nodes are reconciled into SQLite and projected through both canvas cards and the Today dashboard.
-
-Whole-workspace backup serializes those tables as normalized JSON rather than coupling exports to a particular SQLite binary/VFS. The same store contract can move to Worker + OPFS or native Tauri SQLite. Details are in [life-data.md](life-data.md).
-
-### Canonical vault boot (Phase 4b)
-
-ADR-0001 makes canonical files the source of truth and SQLite a rebuildable index. The persistence foundation is implemented and Node-tested in `storage/`:
-
-- `storage/workspace-vault.js` writes the metadata-only sidecar (`.orbit/workspace.json`) plus one independently-valid `.canvas` file per canvas, with optimistic-concurrency saves, a serialized write queue, and missing/invalid-file diagnostics;
-- `storage/workspace-backup.js` produces and restores the version-2 whole-space `.orbit.json` bundle (sidecar + raw files, never a SQLite snapshot);
-- `storage/indexeddb-vault.js` is the browser vault adapter; `storage/memory-vault.js` is the test adapter;
-- `storage/life-indexer.js` projects canonical files into the schema-version-2 index tables.
-
-`app.js` imports the vault modules and boots **vault-first** through an asynchronous `bootCanvasApp()` (plan §14.1): it reads the sidecar and canvas documents from the IndexedDB vault, migrating the legacy `localStorage` workspace on first run, and writes every save back to the vault. If the vault is unavailable or unreadable, boot falls back to the synchronous `localStorage` load, so the app still starts. `localStorage` is now a fallback/migration mirror pending retirement; removing it entirely is a later cleanup once the vault boot is browser-verified (including the §18 first-render budget). The persistence logic is exercised against `MemoryVault` by `storage/phase4.test.js` and `storage/phase4-backup.test.js`.
-
-## Nested canvases and infinite zoom
-
-A large space can contain an arbitrary hierarchy of smaller canvases without extending JSON Canvas:
-
-- every level is an independent, valid JSON Canvas 1.0 document;
-- a parent represents a child with a standard `file` node whose path is `canvases/<id>.canvas`;
-- Balaur renders those resolvable file nodes as portal cards with live miniature previews;
-- double-clicking, choosing **Open**, or zooming over a portal past 220% enters it;
-- zooming out at the minimum scale returns to the parent, while breadcrumbs and the canvas list allow direct switching;
-- parent ID, portal node ID, title, and camera state live in a workspace sidecar rather than private node fields.
-
-The current static prototype persists that workspace wrapper in `localStorage`. A filesystem-backed application should store the root `.canvas`, child files under `canvases/`, and a small sidecar manifest. This preserves direct interoperability: another JSON Canvas editor can still open every level independently, even if it does not understand Balaur's hierarchy navigation.
-
-### Johnny Decimal projection
-
-Johnny Decimal is implemented as a constrained projection of the same hierarchy rather than a new node type:
-
-- the root canvas is the index;
-- area records validate ranges such as `10-19`;
-- category records must fall inside their area's range, such as `11`;
-- items use category-scoped IDs from `11.01` through `11.99`;
-- area, category, and complex-item canvases are ordinary file-node portals with readable paths;
-- simple item notes encode their ID in a Markdown heading and an inert `<!-- orbit:jd ... -->` compatibility marker;
-- a sidecar index rejects duplicates, provides direct lookup, and orders the canvas tree numerically.
-
-A whole-space `.balaur.json` backup contains that sidecar plus all of the independent JSON Canvas documents. Its internal `orbit-workspace` discriminator remains stable for backward compatibility. Single `.canvas` import/export remains available for interoperability. New installations seed this model with a fictional age-30 life index (9 areas, 17 categories, and 34 item notes); the template is ordinary workspace data and can be replaced or edited completely.
-
-## Suggested source layout
+The vault is the source of truth:
 
 ```text
-src/
-  components/          Custom Elements such as balaur-canvas and balaur-assistant
-  canvas/              Camera, geometry, hit testing, commands, undo/redo
-  json-canvas/         Validation, parse/serialize, migrations
-  domain/              Tasks, recurrence, projects, calendar event models
-  storage/             File System Access API, IndexedDB, SQLite adapters
-  sync/                Operation log and sync adapters
-  widget-runtime/      Sandboxed HTML cards and addressable partial updates
-  ai-operations/       Context builder, validation, and plan previews
-  workers/             Search, indexing, and expensive layout work
-app/                    HTML entry point, global styles, icons, manifest
-desktop/                Optional Tauri shell
+IndexedDbVault (browser) / FsVault (Node) / MemoryVault (tests)
+  ├─ .orbit/workspace.json      hierarchy, cameras, JD metadata
+  ├─ canvases/*.canvas           independent JSON Canvas 1.0 documents
+  ├─ tasks/*.md                  canonical task entities
+  ├─ habits/*.md                 canonical habit definitions
+  ├─ habit-logs/YYYY/*.md        append-only daily habit events
+  ├─ journal/YYYY/*.md           canonical journal entries
+  ├─ events/*.md                 canonical calendar events
+  └─ widgets/*.html              sandboxed file-node widgets
 ```
 
-Modules communicate through explicit commands and `EventTarget`/`CustomEvent`, not through framework state. Custom Elements should be used where lifecycle encapsulation is useful, not as a requirement for every small DOM fragment. The current prototype intentionally runs directly as static files with no package install or build step.
+JSON Canvas owns portable spatial content: nodes, geometry, edges, groups, links, and standard file references. The workspace sidecar owns hierarchy, canvas paths, cameras, active canvas, and Johnny Decimal metadata; none of that application state is added to exported Canvas documents.
 
-## Renderer choice
+Markdown frontmatter and body own life-management fields that JSON Canvas does not define. An entity's immutable `orbit-id` is its identity, a path is its locator, and a canvas node ID is a placement. One entity may have zero, one, or many standard `file`-node placements.
 
-Start with a hybrid renderer:
+`LifeIndexer` projects the vault into `MemoryIndex`, and `LifeQuery` is the app-facing read facade for Today, task status, habits, journals, and event ranges. The index is a disposable runtime projection: it is rebuilt from files at boot, reconciled after vault changes, and may be discarded without data loss. Repositories always write canonical files before reindexing them.
 
-- DOM cards for accessible text, forms, Markdown, links, and editing
-- SVG or Canvas 2D for edges, selection decorations, and distant low-detail nodes
-- viewport culling so only visible cards are mounted
-- a spatial index such as RBush once documents become large
+A persistent index, including SQLite, is a deferred future optimization rather than part of canonical-files-only v1. OPFS-backed SQLite Wasm would require COOP/COEP response headers that GitHub Pages cannot provide; the pure-JavaScript in-memory projection is therefore the compatible default. No database is loaded by the browser application.
 
-Avoid adopting a generic graph library too early. Most graph tools assume node-to-node diagrams, whereas this product needs free spatial composition, groups, rich text, files, and life-management interactions.
+## Runtime startup
 
-## Command model
+`main.js` imports the application module and progressively registers the Service Worker. The app's asynchronous vault-first boot is:
 
-All changes should be represented as commands:
+1. open `IndexedDbVault`;
+2. load `.orbit/workspace.json` and each referenced `.canvas` file through `WorkspaceStore`;
+3. on a genuinely empty first run, migrate the legacy localStorage workspace once into canonical vault files;
+4. construct `MemoryIndex`, `LifeIndexer`, `LifeQuery`, and the file repositories;
+5. rebuild the in-memory projection from every vault file;
+6. render the active workspace from the loaded working set; and
+7. expose `window.orbitVaultReady`, `window.orbitVaultStore`, and the stable `window.orbitCanvas` integration surface.
 
-```ts
-type CanvasCommand =
-  | { type: "node.move"; ids: string[]; delta: Point }
-  | { type: "node.resize"; id: string; bounds: Rect }
-  | { type: "node.update"; id: string; patch: Partial<CanvasNode> }
-  | { type: "edge.create"; edge: CanvasEdge }
-  | { type: "task.complete"; taskId: string; completedAt: string };
-```
+After that one-time migration source is consumed, localStorage is not a source of truth or a persistence mirror. A vault failure is reported as unavailable canonical files; the application must not silently promote a localStorage workspace back to authority.
 
-Commands provide one place for validation, autosave, undo/redo, activity history, and eventual sync. Model output must compile into the same commands rather than directly manipulating component state or the host DOM.
+The wiring is present in `app.js`, but browser verification remains pending for IndexedDB durability, vault-first first render, reload behavior, and the UI's error path. The Node suites verify the platform-neutral storage logic against `MemoryVault` and `MemoryIndex`, not browser IndexedDB.
 
-Live HTML/WebGL cards and the adaptation of `partialupdate` are described in [generative-canvas.md](generative-canvas.md).
+## Modules and boundaries
 
-## Delivery phases
+### Canvas and workspace
 
-1. **Canvas foundation** — standards-based editor, JSON Canvas import/export, command stack, local files.
-2. **Life layer** — task extraction, Today view, projects, recurring tasks, SQLite index.
-3. **Time layer** — calendar projection, drag-to-schedule, reminders, ICS/CalDAV adapter.
-4. **Desktop** — Tauri packaging, filesystem watcher, deep links, system notifications.
-5. **Sync/mobile** — operation log, conflict strategy, then Capacitor or a native renderer based on validated mobile needs.
+`app.js` owns the canvas interaction model, rendering, navigation, AI command flow, and UI state. `storage/canvas-validate.js` is the strict shared JSON Canvas validator. `storage/workspace-vault.js` persists a metadata-only sidecar plus one independently valid `.canvas` file per canvas. Invalid or missing canvas files become read-only repair placeholders and are never silently replaced with empty documents.
+
+A single `.canvas` export is standards-compliant but can contain file references whose target `.md` files are not included. `storage/workspace-backup.js` provides the complete version-2 `.orbit.json` file bundle: sidecar metadata plus raw vault files. Import validates paths, canvases, references, entity parsing, duplicate IDs, and diagnostics in staging before activation.
+
+### Life files and projections
+
+`storage/frontmatter.js` performs constrained, preservation-first parsing and patching. It changes only Orbit-owned fields and preserves unknown keys, comments, ordering, BOM, line endings, and body content. `storage/entity-codec.js` defines the task, habit, habit-log, journal, and calendar-event contracts and validates dates, instants, enums, weekdays, and IANA timezones.
+
+`FileTaskRepository`, `FileHabitRepository`, `FileJournalRepository`, and `FileEventRepository` are asynchronous canonical-file repositories. `storage/life-indexer.js` parses all supported vault files, projects typed rows and placements into `MemoryIndex`, detects malformed files and duplicate identities, and supports cold rebuild and warm revision reconciliation. `storage/index-integrity.js` audits the disposable projection against the files and can purge and rebuild it.
+
+### Adapters
+
+`VaultStore` defines asynchronous list/read/write/remove/move/stat/exists/snapshot/restore operations with hashes and revision changes. `IndexedDbVault` is the browser default; `MemoryVault` supplies deterministic tests; `FsVault` is the Node filesystem reference adapter with path, symlink, serialization, and atomic-write protections. Browser persistence and restore need real-browser verification; the adapter contracts and most behavior are Node-tested.
+
+## JSON Canvas and nested canvases
+
+Every canvas level is an independent JSON Canvas 1.0 document with only standard node types (`text`, `file`, `link`, `group`) and standard edge fields. A parent points to a child through a standard file node such as `canvases/11-finance.canvas`. Sidecar metadata supplies the parent, portal node, title, camera, and Johnny Decimal projection. Navigation can enter and leave nested canvases without flattening their documents.
+
+Johnny Decimal is a validated hierarchy projection:
+
+- root → area (`10-19`);
+- area → category (`11`); and
+- category → item (`11.01`).
+
+Portals are ordinary file nodes. Simple item notes may carry harmless `orbit:jd` comments, but the comment is not the item identity; sidecar hierarchy and readable note content remain synchronized.
+
+## AI and widgets
+
+AI output is either a standard text-node addition or an allowlisted structured operation. The app validates IDs, URLs, geometry, operation counts, and the resulting document, presents a proposal, and requires confirmation. AI life changes must use canonical file repositories. When a connected input is a file node, context assembly resolves the canonical file body.
+
+HTML and WebGL cards are standard `.html` file nodes rendered in iframes with `sandbox="allow-scripts"`. Widgets are self-contained, offline-friendly, bounded, reduced-motion aware, and never receive same-origin or filesystem access. Provider keys remain in sessionStorage by default and are never exported.
+
+## Offline shell
+
+The Service Worker caches only deployable same-origin shell resources under `orbit-shell-v5`: local modules, styles, fonts, icons, the manifest, and the sample widget. It does not cache IndexedDB records, provider calls, generated exports, or external resources. Network-first requests fall back to the shell cache when offline. See [offline.md](offline.md).
+
+## Node-verified foundation and browser-pending work
+
+The storage modules and the explicit phase test command pass 165 Node tests. Node verification covers codecs, path safety, vault adapters, workspace persistence, backup validation, repositories, indexing, queries, and integrity auditing. It does not prove browser IndexedDB behavior.
+
+The following require a real browser profile: IndexedDB persistence and restore, vault-first startup and first-render timing, task create/complete/Today UI flows, export/import round-trip, offline reload and Service Worker upgrades, timezone boundaries in browser locale behavior, and malformed-file repair affordances. Documentation must label these as browser-pending until exercised.
+
+## Future packaging, not v1 dependencies
+
+The same adapter boundaries leave room for a Tauri shell, browser directory access, sync, workerized indexing, or a persistent index later. These are future options, not shipped runtime requirements. Any future index must remain rebuildable from canonical vault files and must not become a second owner of life state.

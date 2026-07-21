@@ -1,21 +1,20 @@
 // LifeIndexer — projects canonical vault files into a queryable index (Phase 3).
 //
 // The indexer depends on two injected ports: a VaultStore (files) and an index
-// (source_files / typed projections / placements / diagnostics / state). It never
-// imports the SQLite store directly, so its logic is Node-testable against
-// MemoryVault + MemoryIndex, and the same class drives SqliteLifeStore in the
-// browser (plan §11.4 per-file replacement, §12 index lifecycle).
+// (source files / typed projections / placements / diagnostics / state). It
+// projects canonical vault files into the disposable in-memory query index.
 //
 // Parsing/validation happens OUTSIDE any index transaction; each file's
-// projection is then applied atomically (plan §11.4).
+// projection is then applied atomically.
 
 import { contentHash } from "./content-hash.js";
 import { byteLength } from "./vault-path.js";
 import { mediaTypeFor } from "./vault-store.js";
 import { splitFrontmatter, collectKnownFields } from "./frontmatter.js";
 import { ENTITY_CODECS, parseHabitEntries } from "./entity-codec.js";
+import { isCanvas } from "./canvas-validate.js";
 
-// Entity directory -> orbit-type (plan §6 layout).
+// Entity directory -> orbit-type (canonical vault layout).
 const ENTITY_DIR_TO_TYPE = {
   "tasks": "task",
   "habits": "habit",
@@ -27,10 +26,6 @@ const ENTITY_DIR_TO_TYPE = {
 export function entityTypeFromPath(path) {
   const dir = String(path).split("/")[0];
   return ENTITY_DIR_TO_TYPE[dir] || null;
-}
-
-export function isCanvasDoc(doc) {
-  return !!doc && typeof doc === "object" && Array.isArray(doc.nodes) && Array.isArray(doc.edges);
 }
 
 function stripInternal(record) {
@@ -52,7 +47,9 @@ function parseMdEntity(content) {
     err.code = "ENTITY_UNKNOWN_TYPE";
     throw err;
   }
-  return { kind: "entity", parsed: { type, ...ENTITY_CODECS[type].parse(content) } };
+  const parsed = { type, ...ENTITY_CODECS[type].parse(content) };
+  if (type === "habit-log") parseHabitEntries(parsed.body); // malformed marker invalidates the whole source file
+  return { kind: "entity", parsed };
 }
 
 // Build the source_files record (and parsed payload) for one file.
@@ -75,7 +72,7 @@ export async function buildSourceRecord(path, content, meta = {}) {
     record.entityType = "canvas";
     try {
       const doc = JSON.parse(content);
-      if (!isCanvasDoc(doc)) throw new Error("Not a valid JSON Canvas document");
+      if (!isCanvas(doc)) throw new Error("Not a valid JSON Canvas document");
       return { record, parsed: { type: "canvas", doc } };
     } catch (err) {
       record.parseStatus = "error";
@@ -85,16 +82,26 @@ export async function buildSourceRecord(path, content, meta = {}) {
   }
 
   if (path.endsWith(".md")) {
+    // Extract identity independently of typed parsing. A malformed duplicate
+    // must still suppress a valid sibling rather than becoming the winner.
+    let identity = {};
+    try {
+      const fm = splitFrontmatter(content);
+      if (fm) identity = collectKnownFields(fm.lines.slice(fm.openIdx + 1, fm.closeIdx), {
+        fields: { "orbit-type": "enum", "orbit-id": "string" },
+      });
+    } catch (_) { /* the full parser below records the useful diagnostic */ }
     try {
       const { kind, parsed } = parseMdEntity(content);
       if (kind === "untyped") return { record, parsed: null };
       record.entityType = parsed.type;
-      record.entityId = parsed.orbitId || null;
+      record.entityId = parsed.orbitId || identity["orbit-id"] || null;
       return { record, parsed };
     } catch (err) {
       record.parseStatus = "error";
       record.parseError = `${err.code || "PARSE"}: ${err.message}`;
-      record.entityType = entityTypeFromPath(path);
+      record.entityType = identity["orbit-type"] || entityTypeFromPath(path);
+      record.entityId = identity["orbit-id"] || null;
       return { record, parsed: null };
     }
   }
@@ -201,42 +208,51 @@ export class LifeIndexer {
     else if (proj.kind === "habit-entries") this.index.insertHabitEntries(proj.rows);
   }
 
-  // Index one file: parse outside the transaction, then apply atomically.
-  async indexFile(path, content, meta = {}) {
-    const { record, parsed } = await buildSourceRecord(path, content, meta);
-    this.index.transaction(() => {
-      this.index.clearProjectionForPath(path);
-      this.index.clearDiagnostics(path);
-      this.index.upsertSourceFile(stripInternal(record));
-      if (record.parseStatus === "error") {
-        this.index.recordDiagnostic({ sourcePath: path, errorCode: "PARSE_ERROR", message: record.parseError, detailsJson: null });
-      } else {
-        this._applyProjection(record, parsed);
-      }
-    });
-    return stripInternal(record);
+  async _recordsWithParsed(replacement = null) {
+    const paths = new Set(this.index.allSourceFiles().map((r) => r.path));
+    if (replacement) paths.add(replacement.record.path);
+    const out = [];
+    for (const path of paths) {
+      let content;
+      if (replacement && path === replacement.record.path) content = replacement.content;
+      else { try { content = await this.vault.read(path); } catch (_) { continue; } }
+      const built = await buildSourceRecord(path, content, replacement && path === replacement.record.path ? replacement.meta : {});
+      out.push({ ...built, record: { ...built.record, _parsed: built.parsed } });
+    }
+    return out;
   }
 
-  removeFile(path) {
-    const prior = this.index.getSourceFile(path);
+  async _reproject(records) {
+    const sourceRecords = records.map((r) => r.record || r);
+    const duplicatePaths = new Set(detectDuplicateIds(sourceRecords).map((d) => d.sourcePath));
     this.index.transaction(() => {
-      this.index.clearProjectionForPath(path);
-      this.index.deleteSourceFile(path);
-      this.index.clearDiagnostics(path);
-      // Plan §11.5: removing an entity drops its placements and flags canvas
-      // nodes that still reference the now-missing file.
-      if (prior && prior.entityId) {
-        const dangling = this.index.placementsForEntity(prior.entityId);
-        this.index.removePlacementsForEntity(prior.entityId);
-        for (const p of dangling) {
-          this.index.recordDiagnostic({
-            sourcePath: path, errorCode: "MISSING_REFERENCE",
-            message: `Canvas "${p.canvasId}" node "${p.nodeId}" references a deleted entity file`,
-            detailsJson: JSON.stringify(p),
-          });
-        }
+      this.index.clearAllProjections?.();
+      for (const rec of records) this.index.clearProjectionForPath(rec.record.path);
+      this.index.clearAllDiagnostics?.();
+      for (const rec of records) {
+        this.index.upsertSourceFile(stripInternal(rec.record));
+        if (rec.record.parseStatus === "error") this.index.recordDiagnostic({ sourcePath: rec.record.path, errorCode: "PARSE_ERROR", message: rec.record.parseError, detailsJson: null });
+        else if (!duplicatePaths.has(rec.record.path)) this._applyProjection(rec.record, rec.parsed);
       }
+      for (const d of detectDuplicateIds(sourceRecords)) this.index.recordDiagnostic(d);
     });
+  }
+
+  // Index one file, then re-evaluate all identity conflicts. This deliberately
+  // reprojects the small in-memory index so a new duplicate cannot leave a
+  // last-writer winner behind, and removing a duplicate restores its sibling.
+  async indexFile(path, content, meta = {}) {
+    const built = await buildSourceRecord(path, content, meta);
+    await this._reproject(await this._recordsWithParsed({ record: built.record, parsed: built.parsed, content: String(content), meta }));
+    await this._rebuildAllPlacements();
+    return stripInternal(built.record);
+  }
+
+  async removeFile(path) {
+    this.index.deleteSourceFile(path);
+    const records = await this._recordsWithParsed();
+    await this._reproject(records);
+    await this._rebuildAllPlacements();
   }
 
   // Full cold rebuild (plan §12.1). Idempotent.
@@ -254,20 +270,9 @@ export class LifeIndexer {
 
     this.index.transaction(() => this.index.clearAll());
 
-    let m = 0;
-    for (const record of records) {
-      this.index.transaction(() => {
-        this.index.upsertSourceFile(stripInternal(record));
-        if (record.parseStatus === "error") {
-          this.index.recordDiagnostic({ sourcePath: record.path, errorCode: "PARSE_ERROR", message: record.parseError, detailsJson: null });
-        } else {
-          this._applyProjection(record, record._parsed);
-        }
-      });
-      if (onProgress) onProgress({ phase: "index", done: ++m, total: records.length });
-    }
-
-    for (const d of detectDuplicateIds(records)) this.index.recordDiagnostic(d);
+    const wrapped = records.map((record) => ({ record, parsed: record._parsed }));
+    await this._reproject(wrapped);
+    if (onProgress) onProgress({ phase: "index", done: records.length, total: records.length });
     await this._rebuildAllPlacements();
 
     this.index.setIndexState("indexedRevision", String(this.vault.revision));
@@ -275,25 +280,54 @@ export class LifeIndexer {
     return this.stats();
   }
 
-  // Warm reconciliation from a vault revision (plan §12.2).
+  // Warm reconciliation from a vault revision (plan §12.2). Move ancestry is
+  // retained while changes are coalesced: a move followed by a modify/remove on
+  // the new path still removes the old indexed source.
   async reconcileWarm(fromRevision) {
     const changes = await this.vault.changesSince(fromRevision);
-    const byPath = new Map();
-    for (const c of changes) byPath.set(c.path, c); // coalesce: last operation per path wins
-    let canvasChanged = false;
-    for (const [path, change] of byPath) {
-      if (path.endsWith(".canvas")) canvasChanged = true;
-      if (change.operation === "remove") { this.removeFile(path); continue; }
+    const aliases = new Map(); // current path -> paths that may still be indexed
+    const final = new Map();
+    const removed = new Set();
+    const canvasPaths = new Set();
+    for (const change of changes) {
+      const path = change.path;
+      if (path.endsWith(".canvas")) canvasPaths.add(path);
+      if (change.operation === "move" && change.oldPath) {
+        canvasPaths.add(change.oldPath);
+        const oldAliases = aliases.get(change.oldPath) || new Set([change.oldPath]);
+        aliases.delete(change.oldPath);
+        aliases.set(path, new Set([...oldAliases, change.oldPath]));
+        for (const oldPath of oldAliases) removed.add(oldPath);
+        final.set(path, { ...change, oldPaths: oldAliases });
+      } else if (change.operation === "remove") {
+        const oldAliases = aliases.get(path) || new Set();
+        for (const oldPath of oldAliases) removed.add(oldPath);
+        removed.add(path);
+        aliases.delete(path);
+        final.delete(path);
+      } else {
+        const oldAliases = aliases.get(path) || new Set();
+        final.set(path, { ...change, oldPaths: oldAliases });
+      }
+    }
+    for (const path of removed) {
+      if (final.has(path)) continue;
+      await this.removeFile(path);
+    }
+    for (const [path] of final) {
       let content;
       try { content = await this.vault.read(path); }
-      catch { this.removeFile(path); continue; }
+      catch (_) { await this.removeFile(path); continue; }
       await this.indexFile(path, content, {});
     }
-    if (canvasChanged) await this._rebuildAllPlacements();
+    if (canvasPaths.size) await this._rebuildAllPlacements();
     this.index.setIndexState("indexedRevision", String(this.vault.revision));
     return this.stats();
   }
 
+  // TODO(deferred, plan S14): avoid rewriting/reindexing unchanged canvases and
+  // prune the in-memory adapter's change journal when a persistent revision
+  // checkpoint is available.
   // Public wrapper: re-derive all canvas placements from the vault's current
   // .canvas files (plan §9.2/§12.1.8). Called after a placement edit so the index
   // reflects the canonical canvas documents without a full cold rebuild.
@@ -303,8 +337,13 @@ export class LifeIndexer {
 
   async _rebuildAllPlacements() {
     const pathToEntity = new Map();
+    const byId = new Map();
+    for (const rec of this.index.allSourceFiles()) if (rec.entityType && rec.entityType !== "canvas" && rec.entityId) {
+      if (!byId.has(rec.entityId)) byId.set(rec.entityId, []);
+      byId.get(rec.entityId).push(rec);
+    }
     for (const rec of this.index.allSourceFiles()) {
-      if (rec.entityType && rec.entityType !== "canvas") {
+      if (rec.entityType && rec.entityType !== "canvas" && rec.entityId && byId.get(rec.entityId)?.length === 1) {
         pathToEntity.set(rec.path, { entityId: rec.entityId, entityType: rec.entityType });
       }
     }
@@ -314,7 +353,7 @@ export class LifeIndexer {
       const content = await this.vault.read(f.path);
       let doc;
       try { doc = JSON.parse(content); } catch { continue; }
-      if (!isCanvasDoc(doc)) continue;
+      if (!isCanvas(doc)) continue;
       const canvasId = this.canvasIdFromPath(f.path);
       const { placements, missing } = extractCanvasPlacements(canvasId, doc, pathToEntity);
       this.index.transaction(() => this.index.replaceCanvasPlacements(canvasId, placements));
@@ -330,7 +369,9 @@ export class LifeIndexer {
 
   stats() {
     return {
-      sourceFiles: this.index.allSourceFiles().length,
+      // The sidecar is workspace metadata, not a source file shown in the
+      // life-data count. It may still be retained in the disposable index.
+      sourceFiles: this.index.allSourceFiles().filter((record) => record.path !== ".orbit/workspace.json").length,
       tasks: this.index.allTasks().length,
       habits: this.index.allHabits().length,
       placements: this.index.allPlacements().length,

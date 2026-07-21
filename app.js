@@ -1,6 +1,16 @@
 /* Balaur is dependency-free. Every canvas document follows JSON Canvas 1.0; hierarchy and cameras live in a local workspace sidecar. */
 import { IndexedDbVault } from "./storage/indexeddb-vault.js";
-import { WorkspaceStore } from "./storage/workspace-vault.js";
+import { WorkspaceStore, hasWorkspace, canvasPathFor } from "./storage/workspace-vault.js";
+import { isCanvas } from "./storage/canvas-validate.js";
+import { LifeIndexer } from "./storage/life-indexer.js";
+import { parseEntity } from "./storage/entity-codec.js";
+import { MemoryIndex } from "./storage/memory-index.js";
+import { createLifeQuery } from "./storage/life-query.js";
+import { FileTaskRepository } from "./storage/task-repository.js";
+import { FileHabitRepository } from "./storage/habit-repository.js";
+import { FileJournalRepository, FileEventRepository } from "./storage/journal-event-repository.js";
+import { exportBundle, importBundle, serializeBundle, assertCompleteExport } from "./storage/workspace-backup.js";
+import { auditIndex } from "./storage/index-integrity.js";
 const COLORS = {
   "1": "#ff7b78", "2": "#efa66a", "3": "#e9d56b",
   "4": "#7ee0a1", "5": "#64cbd0", "6": "#a78bfa"
@@ -98,6 +108,8 @@ let activeFilter = "all";
 let activeAppView = "canvas";
 let spaceDown = false;
 let saveTimer;
+let pendingSave=Promise.resolve();
+let mutationQueue=Promise.resolve();
 const aiCardRuntime=new Map();
 let renderedSelectionKey = null;
 const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)");
@@ -111,6 +123,16 @@ function updateWithViewTransition(update) {
 }
 let vaultStore=null;
 let vaultReady=null;
+let lifeIndex=null;
+let lifeIndexer=null;
+let lifeQuery=null;
+let taskRepository=null;
+let habitRepository=null;
+let journalRepository=null;
+let eventRepository=null;
+let canonicalWritable=false;
+const aiFileContentCache=new Map();
+const taskUpdateTimers=new Map();
 
 const canvas = $("#canvas");
 const world = $("#world");
@@ -137,7 +159,11 @@ function freshWorkspace(document=loadDocument()){
 }
 function normalizeWorkspace(parsed){
   parsed.johnnyDecimal ||= {enabled:false,entries:{}};parsed.johnnyDecimal.entries ||= {};
-  for(const record of Object.values(parsed.canvases)){if(record.id===parsed.rootId){record.path=null;continue;}if(!record.path){const parent=parsed.canvases[record.parentId],portal=parent?.document.nodes?.find(node=>node.id===record.portalNodeId);record.path=portal?.file||`canvases/${record.id}.canvas`;}}
+  for(const record of Object.values(parsed.canvases)){
+    if(record.jdCode&&!record.jdKind)record.jdKind=parsed.johnnyDecimal.entries[record.jdCode]?.kind;
+    if(record.id===parsed.rootId){record.path=null;continue;}
+    if(!record.path){const parent=parsed.canvases[record.parentId],portal=parent?.document.nodes?.find(node=>node.id===record.portalNodeId);record.path=portal?.file||`canvases/${record.id}.canvas`;}
+  }
   return parsed;
 }
 function loadWorkspace(){
@@ -150,72 +176,129 @@ function loadWorkspace(){
   return localStorage.getItem("orbit-canvas-v1")?freshWorkspace():createJohnnyDecimalStarterWorkspace();
 }
 
-function isCanvas(data) {
-  if (!data || typeof data!=="object" || data.nodes&&!Array.isArray(data.nodes) || data.edges&&!Array.isArray(data.edges)) return false;
-  const nodes=data.nodes||[],edges=data.edges||[],nodeIds=new Set(),itemIds=new Set(),sides=new Set(["top","right","bottom","left"]),ends=new Set(["none","arrow"]);
-  const validColor=color=>color===undefined || typeof color==="string" && (/^[1-6]$/.test(color)||/^#[0-9a-f]{6}$/i.test(color));
-  for(const node of nodes){
-    if(!node||typeof node.id!=="string"||!node.id||itemIds.has(node.id)||!["text","file","link","group"].includes(node.type)||![node.x,node.y,node.width,node.height].every(Number.isInteger)||node.width<=0||node.height<=0||!validColor(node.color))return false;
-    if(node.type==="text"&&typeof node.text!=="string"||node.type==="file"&&typeof node.file!=="string"||node.type==="link"&&typeof node.url!=="string"||node.type==="group"&&node.backgroundStyle!==undefined&&!["cover","ratio","repeat"].includes(node.backgroundStyle))return false;
-    nodeIds.add(node.id);itemIds.add(node.id);
-  }
-  for(const edge of edges){
-    if(!edge||typeof edge.id!=="string"||!edge.id||itemIds.has(edge.id)||typeof edge.fromNode!=="string"||typeof edge.toNode!=="string"||!nodeIds.has(edge.fromNode)||!nodeIds.has(edge.toNode)||edge.fromSide!==undefined&&!sides.has(edge.fromSide)||edge.toSide!==undefined&&!sides.has(edge.toSide)||edge.fromEnd!==undefined&&!ends.has(edge.fromEnd)||edge.toEnd!==undefined&&!ends.has(edge.toEnd)||!validColor(edge.color))return false;
-    itemIds.add(edge.id);
-  }
-  return true;
-}
 
 function saveCurrentCanvasState(){
   const record=workspace.canvases[currentCanvasId];if(!record)return;record.document=documentData;record.camera={...camera};const value=$("#canvasTitle")?.value.trim();if(value){if(record.jdCode){const formatted=formatJDCode(record.jdCode),title=(value.startsWith(formatted)?value.slice(formatted.length).replace(/^\s*(?:—|-)\s*/,""):value)||record.jdTitle||"Untitled";record.jdTitle=title;record.title=jdDisplayTitle(record.jdCode,title);const entry=jdEntries()[record.jdCode];if(entry)entry.title=title;}else record.title=value;}
 }
+function enqueueMutation(task){
+  const run=mutationQueue.then(task,task);
+  mutationQueue=run.catch(()=>{});
+  return run;
+}
+async function saveWorkspaceNow(){
+  saveCurrentCanvasState();workspace.activeId=currentCanvasId;
+  if(!vaultStore)return;
+  const fromRevision=Number(lifeIndex?.getIndexState("indexedRevision")||0);
+  await vaultStore.save(workspace);
+  await lifeIndexer?.reconcileWarm(fromRevision);
+  if(lifeIndexer){const stats=lifeIndexer.stats();setIndexStatus(`Files · ${stats.sourceFiles} indexed`,`${stats.tasks} tasks · ${stats.habits} habits · ${stats.diagnostics} diagnostics`);}
+}
 function persistWorkspace(){
-  saveCurrentCanvasState();workspace.activeId=currentCanvasId;localStorage.setItem(WORKSPACE_KEY,JSON.stringify(workspace));localStorage.setItem("orbit-canvas-v1",JSON.stringify(workspace.canvases[workspace.rootId].document));localStorage.setItem("orbit-title",workspace.canvases[workspace.rootId].title);try{window.orbitLifeStore?.syncCanvasRecord(workspace.canvases[currentCanvasId]);}catch(error){console.warn("Could not update the life database index",error);}
-  if(vaultStore){vaultStore.save(workspace).catch(error=>console.warn("Could not persist the canonical vault workspace",error));}
+  const operation=enqueueMutation(saveWorkspaceNow);
+  pendingSave=operation;
+  return operation;
+}
+function markSaveResult(promise){
+  promise.then(()=>{$("#saveState").innerHTML="<i></i> Saved locally";},error=>{
+    console.warn("Could not persist the canonical vault workspace",error);
+    $("#saveState").innerHTML="<i></i> Save failed";
+    toast("Could not save the canonical files; your changes are not durable");
+  });
+  return promise;
 }
 function scheduleSave() {
+  if (!canonicalWritable) { $("#saveState").innerHTML = "<i></i> Read-only"; return; }
   $("#saveState").innerHTML = "<i></i> Saving…";
   clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => {
-    persistWorkspace();
-    $("#saveState").innerHTML = "<i></i> Saved locally";
-  }, 350);
+  saveTimer = setTimeout(() => { saveTimer=null; markSaveResult(persistWorkspace()); }, 350);
+}
+async function flushPendingWorkspaceEdits(){
+  if(saveTimer!==undefined&&saveTimer!==null){clearTimeout(saveTimer);saveTimer=null;markSaveResult(persistWorkspace());}
+  await pendingSave;
+  await mutationQueue;
+}
+async function reloadCanvasDocuments(canvasIds){
+  if(!vaultStore)return;
+  for(const id of new Set(canvasIds)){
+    const record=workspace.canvases[id];if(!record||record.readOnly)continue;
+    const path=canvasPathFor(record,workspace.rootId);
+    const parsed=JSON.parse(await vaultStore.vault.read(path));
+    if(!isCanvas(parsed))throw new Error(`Canonical canvas is invalid: ${record.path}`);
+    const stat=await vaultStore.vault.stat(path);if(stat)vaultStore.hashes.set(path,stat.hash);
+    record.document=parsed;
+    if(id===currentCanvasId)documentData=parsed;
+  }
 }
 
-// Vault-first asynchronous boot (ADR-0001, plan §14.1). The canonical IndexedDB
-// vault is the source of truth: load the workspace sidecar and canvas documents
-// from it, migrating the legacy local-storage workspace on first run. If the
-// vault is unavailable or cannot be read, fall back to the synchronous
-// local-storage load so the app still starts (progressive enhancement, mirroring
-// how the life store resolves to null on failure). Finally sets the workspace
-// globals and performs the first render.
-async function bootCanvasApp(){
-  let booted=null;
-  try{
-    const vault=new IndexedDbVault("orbit-vault");
-    const store=new WorkspaceStore(vault);
-    let result=await store.load();
-    if(!result){
-      await store.migrate(loadWorkspace());
-      result=await store.load();
-    }
-    if(result?.workspace?.canvases&&Object.keys(result.workspace.canvases).length){
-      booted=result.workspace;
-      vaultStore=store;
-      window.orbitVaultStore=store;
-      for(const diagnostic of result.diagnostics)console.warn("Vault workspace diagnostic",diagnostic);
-    }
-  }catch(error){
-    console.warn("Vault-first boot failed; falling back to local storage",error);
+function setIndexStatus(message, detail = message) {
+  const state = $("#lifeIndexStatus");
+  if (state) { state.textContent = message; state.title = detail; }
+}
+function setCanonicalWritable(writable, message = "") {
+  canonicalWritable = writable;
+  document.documentElement.toggleAttribute("data-canonical-read-only", !writable);
+  const selectors = ["[data-add]", "#newGroup", "#newCanvas", "#loadJDStarter", "#createTaskButton", "#newTodayTask", "#todayQuickAdd input", "#todayQuickAdd button", "#resetDemo", "#importButton"];
+  for (const selector of selectors) $$(selector).forEach((control) => { control.disabled = !writable; control.title = writable ? "" : (message || "Canonical files are read-only until repaired or restored."); });
+  if(!writable&&message)setIndexStatus("Files read-only · repair/export required",message);
+}
+function canvasIdFromPath(path) {
+  const record = Object.values(workspace.canvases).find(item => canvasPathFor(item, workspace.rootId) === path);
+  return record?.id || String(path).split("/").pop().replace(/\.canvas$/, "");
+}
+function configureLifeRuntime(vault) {
+  lifeIndex = new MemoryIndex();
+  lifeIndexer = new LifeIndexer({ vault, index: lifeIndex, canvasIdFromPath });
+  lifeQuery = createLifeQuery(lifeIndex);
+  taskRepository = new FileTaskRepository({
+    vault, index: lifeIndex, indexer: lifeIndexer,
+    canvasPathFromId: id => { const record = workspace.canvases[id]; return record ? canvasPathFor(record, workspace.rootId) : null; }
+  });
+  habitRepository = new FileHabitRepository({ vault, index: lifeIndex, indexer: lifeIndexer });
+  journalRepository = new FileJournalRepository({ vault, index: lifeIndex, indexer: lifeIndexer });
+  eventRepository = new FileEventRepository({ vault, index: lifeIndex, indexer: lifeIndexer });
+}
+async function seedStarterTasks() {
+  for (const [categoryCode, title, notes] of JD_LIFE_STARTER_TASKS) {
+    const canvasId = workspace.johnnyDecimal.entries[categoryCode]?.canvasId;
+    if (canvasId) await taskRepository.createTask({ title, body: notes, canvasId, status: "inbox", geometry: { x: 0, y: 240, width: 310, height: 180, color: "5", id: `starter-task-node-${categoryCode}` });
   }
-  workspace=booted||loadWorkspace();
-  currentCanvasId=workspace.canvases[workspace.activeId]?workspace.activeId:workspace.rootId;
-  documentData=workspace.canvases[currentCanvasId].document;
-  camera=workspace.canvases[currentCanvasId].camera||{x:80,y:55,zoom:.78};
-  $("#canvasTitle").value=canvasRecord().title;
-  renderWorkspaceNavigation();
-  render();
-  setTimeout(fitView,50);
+}
+// Vault-first asynchronous boot. The only post-migration source of truth is the
+// IndexedDB vault; the MemoryIndex is rebuilt from its files for every session.
+async function bootCanvasApp(){
+  try {
+    const vault = new IndexedDbVault("orbit-vault");
+    const store = new WorkspaceStore(vault);
+    const hadWorkspace = await hasWorkspace(vault);
+    const firstRun = !hadWorkspace && !localStorage.getItem(WORKSPACE_KEY) && !localStorage.getItem("orbit-canvas-v1");
+    if (!hadWorkspace) await store.migrate(loadWorkspace());
+    const result = await store.load();
+    if (!result?.workspace?.canvases || !Object.keys(result.workspace.canvases).length) throw new Error("The vault workspace is empty");
+    workspace = result.workspace;
+    vaultStore = store;
+    window.orbitVaultStore = store;
+    setCanonicalWritable(!result.diagnostics.some((diagnostic) => diagnostic.code === "CANVAS_MISSING" || diagnostic.code === "CANVAS_INVALID" || diagnostic.code === "CANVAS_PARSE"), result.diagnostics.map((diagnostic) => diagnostic.message).join("; "));
+    configureLifeRuntime(vault);
+    for (const diagnostic of result.diagnostics) console.warn("Vault workspace diagnostic", diagnostic);
+    if (firstRun) {
+      await seedStarterTasks();
+      workspace = (await store.load()).workspace;
+    }
+    await lifeIndexer.rebuild();
+    const stats = lifeIndexer.stats();
+    setIndexStatus(canonicalWritable ? `Files · ${stats.sourceFiles} indexed` : "Files read-only · repair/export required", canonicalWritable ? `${stats.tasks} tasks · ${stats.habits} habits · ${stats.diagnostics} diagnostics` : "Repair the canonical vault or export it before editing.");
+  } catch (error) {
+    console.warn("Vault-first boot failed; canonical files are unavailable", error);
+    vaultStore = null; lifeIndex = null; lifeIndexer = null; lifeQuery = null; taskRepository = null; habitRepository = null; journalRepository = null; eventRepository = null;
+    setIndexStatus("Files unavailable", error.message);
+    setCanonicalWritable(false, "Canonical files are unavailable; export or repair the vault before editing.");
+  }
+  currentCanvasId = workspace.canvases[workspace.activeId] ? workspace.activeId : workspace.rootId;
+  documentData = workspace.canvases[currentCanvasId].document;
+  camera = workspace.canvases[currentCanvasId].camera || { x: 80, y: 55, zoom: .78 };
+  $("#canvasTitle").value = canvasRecord().title;
+  renderWorkspaceNavigation(); render();
+  setTimeout(fitView, 50);
 }
 
 function colorValue(color) { return COLORS[color] || color || "#737b87"; }
@@ -277,12 +360,31 @@ function createJohnnyDecimalStarterWorkspace(){
       items.forEach(([itemCode,itemTitle,itemBody],itemIndex)=>{const itemNodeId=starterId("jd-item",itemCode);categoryDocument.nodes.push({id:itemNodeId,type:"text",x:itemIndex*350,y:0,width:310,height:190,color:"3",text:`<!-- orbit:jd ${itemCode} -->\n# ${jdDisplayTitle(itemCode,itemTitle)}\n${itemBody}`});result.johnnyDecimal.entries[itemCode]={code:itemCode,title:itemTitle,kind:"item",parentCanvasId:categoryCanvasId,nodeId:itemNodeId,canvasId:null,itemFormat:"note"};});
     });
   });
-  JD_LIFE_STARTER_TASKS.forEach(([categoryCode,title,notes])=>{const entry=result.johnnyDecimal.entries[categoryCode],record=result.canvases[entry.canvasId],taskId=`starter-task-${categoryCode}`,nodeId=`starter-task-node-${categoryCode}`;record.document.nodes.push({id:nodeId,type:"text",x:0,y:240,width:310,height:180,color:"5",text:buildTaskText(taskId,title,notes)});});
   return normalizeWorkspace(result);
 }
-function resetLifeDatabase(){Promise.resolve(window.orbitLifeReady).then(store=>{if(!store)return;store.importSnapshot({schemaVersion:1});store.syncWorkspaceIndex(workspace);reconcileTaskMarkers(store);renderToday();});}
-function loadJohnnyDecimalStarter(){
-  if(!confirm("Replace your current local space with the fictional age-30 Johnny Decimal starter? Export your space first if you want a backup."))return;workspace=createJohnnyDecimalStarterWorkspace();currentCanvasId=workspace.rootId;documentData=workspace.canvases[currentCanvasId].document;camera={x:80,y:55,zoom:.78};selected=null;connectSource=null;connectSourceSide=null;$("#johnnyDecimalDialog")?.close();$("#canvasTitle").value=canvasRecord().title;persistWorkspace();resetLifeDatabase();render();fitView();toast("Johnny Decimal starter space loaded");
+async function rebuildLifeIndex(){
+  if (!lifeIndexer) return;
+  await lifeIndexer.rebuild();
+  const stats = lifeIndexer.stats();
+  setIndexStatus(`Files · ${stats.sourceFiles} indexed`, `${stats.tasks} tasks · ${stats.habits} habits · ${stats.diagnostics} diagnostics`);
+  renderToday(); renderNodes();
+}
+async function loadJohnnyDecimalStarter(){
+  if(!canonicalWritable||!vaultStore) { toast("Canonical files are unavailable or read-only"); return; }
+  if(!confirm("Replace your current local space with the fictional age-30 Johnny Decimal starter? Export your space first if you want a backup."))return;
+  try {
+    await flushPendingWorkspaceEdits();
+    const starter=createJohnnyDecimalStarterWorkspace();
+    const stagingVault=new IndexedDbVault(`orbit-vault-${uid("reset")}`), stagingStore=new WorkspaceStore(stagingVault);
+    await stagingStore.migrate(starter);
+    workspace=starter;configureLifeRuntime(stagingVault);await seedStarterTasks();
+    const snapshot=await stagingVault.snapshot(), canonicalVault=vaultStore.vault;
+    await canonicalVault.restore(snapshot);
+    const nextStore=new WorkspaceStore(canonicalVault), result=await nextStore.load();
+    if(!result?.workspace)throw new Error("Starter activation did not produce a workspace");
+    vaultStore=nextStore;window.orbitVaultStore=nextStore;workspace=result.workspace;configureLifeRuntime(canonicalVault);await lifeIndexer.rebuild();
+    currentCanvasId=workspace.rootId;documentData=workspace.canvases[currentCanvasId].document;camera={x:80,y:55,zoom:.78};selected=null;connectSource=null;connectSourceSide=null;$("#johnnyDecimalDialog")?.close();$("#canvasTitle").value=canvasRecord().title;renderWorkspaceNavigation();render();fitView();toast("Johnny Decimal starter space loaded");
+  } catch(error) { console.warn("Could not reset the canonical vault",error); toast(`Could not load starter: ${error.message}`); }
 }
 function portalPreview(document){
   const nodes=(document.nodes||[]).slice(0,28);if(!nodes.length)return '<span class="portal-empty">Empty canvas · open to begin</span>';
@@ -320,6 +422,7 @@ function leaveSubcanvas(){
 }
 function focusNode(node,zoom=1.05){camera.zoom=zoom;camera.x=(canvas.clientWidth-node.width*zoom)/2-node.x*zoom;camera.y=(canvas.clientHeight-node.height*zoom)/2-node.y*zoom;applyCamera();}
 function createSubcanvas(point){
+  if(!canonicalWritable){toast("Canonical files are read-only until repaired or restored");return null;}
   const center=point||canvasPoint(canvas.getBoundingClientRect().left+canvas.clientWidth/2,canvas.getBoundingClientRect().top+canvas.clientHeight/2),id=uid("canvas"),nodeId=uid("node"),siblings=Object.values(workspace.canvases).filter(record=>record.parentId===currentCanvasId).length,title=`New canvas ${siblings+1}`,node={id:nodeId,type:"file",x:Math.round(center.x-180),y:Math.round(center.y-125),width:360,height:250,color:"3",file:`canvases/${id}.canvas`};
   workspace.canvases[id]={id,title,parentId:currentCanvasId,portalNodeId:nodeId,path:node.file,document:{nodes:[],edges:[]},camera:null};documentData.nodes.push(node);selected={kind:"node",id:node.id};shell.classList.add("inspector-open");scheduleSave();render();toast("Sub-canvas created · double-click or zoom into it");return node;
 }
@@ -330,6 +433,7 @@ function revealWorkspaceNode(canvasId,nodeId){
   const reveal=()=>{if(currentCanvasId!==canvasId)return;const node=documentData.nodes.find(item=>item.id===nodeId);if(!node)return;selected={kind:"node",id:nodeId};shell.classList.add("inspector-open");render();focusNode(node,1.05);};if(currentCanvasId===canvasId)reveal();else{switchCanvas(canvasId,{direction:"switch",focusNodeId:nodeId});setTimeout(reveal,320);}
 }
 function createJDEntry({parentCanvasId,code,title,itemFormat="canvas"}){
+  if(!canonicalWritable)throw new Error("Canonical files are read-only until repaired or restored.");
   const checked=validateJDCode(code,parentCanvasId);code=checked.code;title=String(title).trim();if(!title)throw new Error("Add a short title.");const parent=workspace.canvases[parentCanvasId];if(!parent)throw new Error("The parent canvas no longer exists.");workspace.johnnyDecimal.enabled=true;
   const nodeId=uid("node"),isCanvasEntry=checked.kind!=="item"||itemFormat==="canvas",size=isCanvasEntry?[360,250]:[300,160],position=nextNodePosition(parent.document,...size),displayTitle=jdDisplayTitle(code,title);let canvasId=null,node;
   if(isCanvasEntry){canvasId=uid("canvas");const path=`canvases/${slug(`${canonicalJDCode(code)}-${title}`)}.canvas`;node={id:nodeId,type:"file",...position,width:size[0],height:size[1],color:"5",file:path};workspace.canvases[canvasId]={id:canvasId,title:displayTitle,parentId:parentCanvasId,portalNodeId:nodeId,path,document:{nodes:[],edges:[]},camera:null,jdCode:code,jdTitle:title,jdKind:checked.kind};}
@@ -337,27 +441,59 @@ function createJDEntry({parentCanvasId,code,title,itemFormat="canvas"}){
   parent.document.nodes ||= [];parent.document.nodes.push(node);workspace.johnnyDecimal.entries[code]={code,title,kind:checked.kind,parentCanvasId,nodeId,canvasId,itemFormat:isCanvasEntry?"canvas":"note"};scheduleSave();$("#johnnyDecimalDialog")?.close();revealWorkspaceNode(parentCanvasId,nodeId);toast(`${formatJDCode(code)} added to the index`);return node;
 }
 function localDateISO(date=new Date()){return `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,"0")}-${String(date.getDate()).padStart(2,"0")}`;}
-function taskStore(){return window.orbitLifeStore||null;}
-function reconcileTaskMarkers(store=taskStore()){
-  if(!store)return;for(const record of Object.values(workspace.canvases))for(const node of record.document.nodes||[]){const id=taskIdFromNode(node);if(!id)continue;const title=taskTitleFromNode(node),existing=store.task(id);if(!existing)store.upsertTask({id,canvasId:record.id,nodeId:node.id,title,status:"inbox"});else if(existing.title!==title||existing.canvasId!==record.id||existing.nodeId!==node.id)store.upsertTask({...existing,canvasId:record.id,nodeId:node.id,title});}
+function taskForNode(node){
+  if(node?.type!=="file"||!lifeIndex)return null;
+  return lifeIndex.allTasks().find(task=>task.sourcePath===node.file)||null;
+}
+function taskIdFromNode(node){return taskForNode(node)?.id||null;}
+function taskPlacement(task){return task&&lifeIndex?.placementsForEntity(task.id)[0]||null;}
+async function updateTask(id, patch){
+  if(!canonicalWritable||!taskRepository) throw new Error("Canonical files are unavailable or read-only.");
+  await flushPendingWorkspaceEdits();
+  const task=await enqueueMutation(()=>taskRepository.updateTask(id, patch));
+  renderNodes(); renderToday(); return task;
+}
+function scheduleTaskFieldUpdate(id, patch) {
+  const prior=taskUpdateTimers.get(id);if(prior)clearTimeout(prior.timer);
+  const merged={...(prior?.patch||{}),...patch};
+  const timer=setTimeout(()=>{taskUpdateTimers.delete(id);updateTask(id,merged).catch(error=>toast(error.message));},250);
+  taskUpdateTimers.set(id,{timer,patch:merged});
+}
+function flushTaskFieldUpdate(id, patch) {
+  const prior=taskUpdateTimers.get(id);if(prior)clearTimeout(prior.timer);
+  taskUpdateTimers.delete(id);
+  return updateTask(id,{...(prior?.patch||{}),...patch}).catch(error=>toast(error.message));
+}
+async function completeTask(id){
+  if(!canonicalWritable||!taskRepository) throw new Error("Canonical files are unavailable or read-only.");
+  await flushPendingWorkspaceEdits();
+  const task=await enqueueMutation(()=>taskRepository.completeTask(id));
+  renderNodes(); renderToday(); return task;
 }
 async function createTask({title,notes="",canvasId=currentCanvasId,status="inbox",scheduledOn=null,dueOn=null,priority=null}={}){
-  title=String(title||"").trim();if(!title)throw new Error("Add a task title.");const store=await window.orbitLifeReady;if(!store)throw new Error("The local life database is unavailable.");const record=workspace.canvases[canvasId];if(!record)throw new Error("Choose an existing canvas.");const id=uid("task"),nodeId=uid("node"),position=nextNodePosition(record.document,310,180),node={id:nodeId,type:"text",...position,width:310,height:180,color:"5",text:buildTaskText(id,title,notes)};record.document.nodes ||= [];record.document.nodes.push(node);store.upsertTask({id,canvasId,nodeId,title,status,scheduledOn:scheduledOn||null,dueOn:dueOn||null,priority:priority===""||priority==null?null:Number(priority)});store.syncCanvasRecord(record);scheduleSave();renderToday();if(canvasId===currentCanvasId&&activeAppView==="canvas"){selected={kind:"node",id:nodeId};shell.classList.add("inspector-open");render();}toast("Task created");return node;
+  title=String(title||"").trim();if(!title)throw new Error("Add a task title.");if(!canonicalWritable||!taskRepository)throw new Error("Canonical files are unavailable or read-only.");const record=workspace.canvases[canvasId];if(!record)throw new Error("Choose an existing canvas.");const nodeId=uid("node"),position=nextNodePosition(record.document,310,180);
+  await flushPendingWorkspaceEdits();
+  const result=await enqueueMutation(async()=>{
+    const created=await taskRepository.createTask({title,body:notes,canvasId,status,scheduledOn:scheduledOn||null,dueOn:dueOn||null,priority:priority===""||priority==null?null:Number(priority),geometry:{...position,width:310,height:180,color:"5",id:nodeId}});
+    await reloadCanvasDocuments([canvasId]);
+    return created;
+  });
+  const node=workspace.canvases[canvasId].document.nodes.find(item=>item.id===result.placement?.nodeId||item.file===result.path);
+  renderToday();if(canvasId===currentCanvasId&&activeAppView==="canvas"){selected={kind:"node",id:node?.id||nodeId};shell.classList.add("inspector-open");render();}toast("Task created");return node;
 }
 function openTaskDialog({today=false}={}){
   const dialog=$("#taskDialog"),select=$("#taskCanvas");select.innerHTML=orderedCanvasRecords().map(record=>`<option value="${escapeHTML(record.id)}">${escapeHTML(record.title)}</option>`).join("");select.value=currentCanvasId;$("#taskTitle").value="";$("#taskNotes").value="";$("#taskStatus").value=today?"scheduled":"inbox";$("#taskScheduledOn").value=today?localDateISO():"";$("#taskDueOn").value="";$("#taskPriority").value="";$("#taskResult").textContent="";dialog.showModal();setTimeout(()=>$("#taskTitle").focus(),60);
 }
-function taskContext(task){return workspace.canvases[task.canvasId]?.title||"Unknown canvas";}
+function taskContext(task){const placement=taskPlacement(task);return workspace.canvases[placement?.canvasId]?.title||"Inbox";}
 function taskListHTML(tasks,empty){
   if(!tasks.length)return `<div class="today-empty">${escapeHTML(empty)}</div>`;return tasks.map(task=>`<article class="today-task ${task.status==="done"?"done":""}" data-task-id="${escapeHTML(task.id)}"><button type="button" class="task-check" data-complete-task aria-label="Complete ${escapeHTML(task.title)}">${task.status==="done"?"✓":""}</button><button type="button" class="task-copy" data-open-task><b>${escapeHTML(task.title)}</b><small>${escapeHTML(taskContext(task))}</small></button><div class="task-dates">${task.scheduledOn?`<time datetime="${task.scheduledOn}">Plan ${escapeHTML(task.scheduledOn.slice(5))}</time>`:""}${task.dueOn?`<time class="due" datetime="${task.dueOn}">Due ${escapeHTML(task.dueOn.slice(5))}</time>`:""}</div></article>`).join("");
 }
 function bindTaskList(root){
-  $$('[data-task-id]',root).forEach(row=>{const id=row.dataset.taskId,store=taskStore();$("[data-complete-task]",row).onclick=()=>{store.completeTask(id);renderToday();renderNodes();toast("Task completed");};$("[data-open-task]",row).onclick=()=>{const task=store.task(id);if(!task)return;setAppView("canvas");revealWorkspaceNode(task.canvasId,task.nodeId);};});
+  $$('[data-task-id]',root).forEach(row=>{const id=row.dataset.taskId;$("[data-complete-task]",row).onclick=async()=>{try{await completeTask(id);toast("Task completed");}catch(error){toast(error.message);}};$("[data-open-task]",row).onclick=()=>{const task=lifeQuery?.tasks().find(item=>item.id===id),placement=taskPlacement(task);if(!placement)return;setAppView("canvas");revealWorkspaceNode(placement.canvasId,placement.nodeId);};});
 }
 function renderToday(){
-  const root=$("#todayView"),store=taskStore();if(!root||!store)return;const today=localDateISO(),all=store.tasks(),active=task=>!["done","cancelled"].includes(task.status),scheduled=all.filter(task=>active(task)&&task.scheduledOn===today),overdue=all.filter(task=>active(task)&&task.dueOn&&task.dueOn<today&&task.scheduledOn!==today),queue=all.filter(task=>active(task)&&["inbox","next"].includes(task.status)&&task.scheduledOn!==today&&!overdue.includes(task)),completed=all.filter(task=>task.status==="done"&&task.completedAt&&localDateISO(new Date(task.completedAt))===today);$("#todayDate").textContent=new Intl.DateTimeFormat(undefined,{weekday:"long",month:"long",day:"numeric"}).format(new Date());$("#todayPlannedCount").textContent=scheduled.length;$("#todayDueCount").textContent=overdue.length;$("#todayDoneCount").textContent=completed.length;$("#todayScheduled").innerHTML=taskListHTML(scheduled,"Nothing scheduled yet. Choose deliberately rather than carrying everything forward.");$("#todayOverdue").innerHTML=taskListHTML(overdue,"No overdue tasks.");$("#todayQueue").innerHTML=taskListHTML(queue,"The task inbox is clear.");$("#todayCompleted").innerHTML=taskListHTML(completed,"Completed tasks will appear here.");bindTaskList(root);
+  const root=$("#todayView");if(!root||!lifeQuery)return;const today=localDateISO(),all=lifeQuery.tasks(),active=task=>!["done","cancelled"].includes(task.status),scheduled=all.filter(task=>active(task)&&task.scheduledOn===today),overdue=all.filter(task=>active(task)&&task.dueOn&&task.dueOn<today&&task.scheduledOn!==today),queue=all.filter(task=>active(task)&&["inbox","next"].includes(task.status)&&task.scheduledOn!==today&&!overdue.includes(task)),completed=all.filter(task=>task.status==="done"&&task.completedAt&&localDateISO(new Date(task.completedAt))===today);$("#todayDate").textContent=new Intl.DateTimeFormat(undefined,{weekday:"long",month:"long",day:"numeric"}).format(new Date());$("#todayPlannedCount").textContent=scheduled.length;$("#todayDueCount").textContent=overdue.length;$("#todayDoneCount").textContent=completed.length;$("#todayScheduled").innerHTML=taskListHTML(scheduled,"Nothing scheduled yet. Choose deliberately rather than carrying everything forward.");$("#todayOverdue").innerHTML=taskListHTML(overdue,"No overdue tasks.");$("#todayQueue").innerHTML=taskListHTML(queue,"The task inbox is clear.");$("#todayCompleted").innerHTML=taskListHTML(completed,"Completed tasks will appear here.");bindTaskList(root);
 }
-function refreshLifeViews(){reconcileTaskMarkers();renderToday();renderNodes();}
 function deleteJDEntriesForCanvas(id){for(const [code,entry] of Object.entries(jdEntries()))if(entry.canvasId===id||entry.parentCanvasId===id)delete workspace.johnnyDecimal.entries[code];}
 function deleteCanvasTree(id){for(const child of Object.values(workspace.canvases).filter(record=>record.parentId===id))deleteCanvasTree(child.id);deleteJDEntriesForCanvas(id);delete workspace.canvases[id];}
 function jdParentOptions(){return orderedCanvasRecords().filter(record=>record.id===workspace.rootId||["area","category"].includes(jdContainerKind(record.id)));}
@@ -371,21 +507,43 @@ function goToJD(value){
   const code=canonicalJDCode(value),entry=jdEntries()[code],result=$("#jdLookupResult");if(!entry){result.className="settings-test error";result.textContent=`No entry found for ${formatJDCode(code)||"that ID"}.`;return;}result.className="settings-test success";result.textContent=`Opening ${formatJDCode(code)} — ${entry.title}`;setTimeout(()=>{$("#johnnyDecimalDialog").close();if(entry.canvasId)switchCanvas(entry.canvasId,{direction:"switch",fit:!workspace.canvases[entry.canvasId].camera});else revealWorkspaceNode(entry.parentCanvasId,entry.nodeId);},100);
 }
 
-const AI_CARD_MARKER="<!-- orbit:ai-card -->",TASK_MARKER_RE=/<!--\s*orbit:task\s+([^\s]+)\s*-->/i;
-function taskIdFromNode(node){return node?.type==="text"?node.text.match(TASK_MARKER_RE)?.[1]||null:null;}
-function taskTitleFromNode(node){return node?.text.match(/^#\s+(.+)$/m)?.[1]||"Untitled task";}
-function buildTaskText(id,title,notes=""){return `<!-- orbit:task ${id} -->\n# ${title.trim()}${notes.trim()?`\n${notes.trim()}`:""}`;}
+const AI_CARD_MARKER="<!-- orbit:ai-card -->";
 function isAICard(node){return node?.type==="text"&&node.text.includes(AI_CARD_MARKER);}
 function parseAICard(node){
   const lines=(node.text||"").split(/\r?\n/).filter(line=>line.trim()!==AI_CARD_MARKER),heading=lines.findIndex(line=>line.startsWith("# ")),title=heading>=0?lines[heading].slice(2).trim():"AI operator";
   if(heading>=0)lines.splice(heading,1);return {title,prompt:lines.join("\n").trim()||"Summarize the connected notes."};
 }
 function buildAICardText(title,prompt){return `${AI_CARD_MARKER}\n# ${title.trim()||"AI operator"}\n${prompt.trim()||"Summarize the connected notes."}`;}
+function indexedEntityForPath(path) {
+  const source = lifeIndex?.getSourceFile(path);
+  if (!source?.entityId || source.parseStatus === "error") return null;
+  const readers = { task: "allTasks", habit: "allHabits", journal: "allJournals", "calendar-event": "allEvents" };
+  const row = readers[source.entityType] ? lifeIndex[readers[source.entityType]]().find(item => item.id === source.entityId || item.orbitId === source.entityId) : null;
+  return { source, row };
+}
 function nodeTitle(node){
-  if(isAICard(node))return parseAICard(node).title;if(node.type==="text"){const heading=node.text.match(/^#{1,2}\s+(.+)$/m);return heading?heading[1]:"Text note";}if(node.type==="group")return node.label||"Group";if(node.type==="link")try{return new URL(node.url).hostname;}catch(_){return "Link";}if(node.type==="file"){const subcanvasId=subcanvasIdFromNode(node);return subcanvasId?workspace.canvases[subcanvasId].title:node.file.split("/").pop();}return node.id;
+  if(isAICard(node))return parseAICard(node).title;if(node.type==="text"){const heading=node.text.match(/^#{1,2}\s+(.+)$/m);return heading?heading[1]:"Text note";}if(node.type==="group")return node.label||"Group";if(node.type==="link")try{return new URL(node.url).hostname;}catch(_){return "Link";}if(node.type==="file"){const subcanvasId=subcanvasIdFromNode(node);if(subcanvasId)return workspace.canvases[subcanvasId].title;return indexedEntityForPath(node.file)?.row?.title||node.file.split("/").pop();}return node.id;
 }
 function inputNodesForAICard(cardId,data=documentData){const byId=Object.fromEntries((data.nodes||[]).map(node=>[node.id,node]));return (data.edges||[]).filter(edge=>edge.toNode===cardId&&edge.label!=="AI output").map(edge=>byId[edge.fromNode]).filter(Boolean);}
-function nodeAIContent(node){if(node.type==="text")return node.text;if(node.type==="link")return node.url;if(node.type==="file")return [node.file,node.subpath].filter(Boolean).join(" ");if(node.type==="group")return node.label||"";return "";}
+function nodeAIContent(node){
+  if(node.type==="text")return node.text;if(node.type==="link")return node.url;
+  if(node.type==="file"){
+    const cached=aiFileContentCache.get(node.file);if(cached)return cached;
+    const entity=indexedEntityForPath(node.file);if(entity?.row)return [`Title: ${entity.row.title||entity.row.localDate||node.file}`, "Canonical body is loading.", node.subpath].filter(Boolean).join("\n");
+    return node.subpath ? `${node.file}\nSubpath: ${node.subpath}` : node.file;
+  }
+  if(node.type==="group")return node.label||"";return "";
+}
+async function preloadAIFileInputs(nodes) {
+  for(const node of nodes.filter(item=>item.type==="file"&&!subcanvasIdFromNode(item))) {
+    if(aiFileContentCache.has(node.file)||!vaultStore)continue;
+    try {
+      const raw=await vaultStore.vault.read(node.file);
+      try { const parsed=parseEntity(raw); aiFileContentCache.set(node.file, [`Title: ${parsed.title||parsed.localDate||node.file}`, parsed.body||""].filter(Boolean).join("\n\n")); }
+      catch (_) { aiFileContentCache.set(node.file, raw); }
+    } catch (error) { aiFileContentCache.set(node.file, `Canonical file unavailable: ${node.file}`); console.warn("Could not preload AI file context", node.file, error); }
+  }
+}
 function aiCardSignature(card,data=documentData){return JSON.stringify([card.text,inputNodesForAICard(card.id,data).map(node=>[node.id,nodeAIContent(node)])]);}
 function aiCardSignatures(data=documentData){return new Map((data.nodes||[]).filter(isAICard).map(card=>[card.id,aiCardSignature(card,data)]));}
 
@@ -446,8 +604,9 @@ function renderNodes() {
       if(isAICard(node)){
         const config=parseAICard(node),inputs=inputNodesForAICard(node.id),runtime=aiCardRuntime.get(node.id)||{status:"Ready"};element.classList.add("ai-card");element.classList.toggle("running",runtime.running===true);
         content.innerHTML=`<div class="node-kicker">AI OPERATOR</div><div class="node-body"><h3 class="ai-card-title">${escapeHTML(config.title)}</h3><p class="ai-card-prompt">${escapeHTML(config.prompt)}</p><div class="ai-inputs">${inputs.length?inputs.map(input=>`<span class="ai-input-chip">← ${escapeHTML(nodeTitle(input))}</span>`).join(""):"<span class=\"ai-input-chip\">No inputs connected</span>"}</div></div><div class="ai-run-row"><span class="ai-run-status">${escapeHTML(runtime.status||"Ready")}</span><button class="ai-run-button" data-ai-run ${runtime.running?"disabled":""}>${runtime.running?"Running…":"Run now"}</button></div>`;
-      } else if(taskIdFromNode(node)){const taskId=taskIdFromNode(node),task=taskStore()?.task(taskId),status=task?.status||"inbox";element.classList.add("task-card");element.classList.toggle("task-complete",status==="done");element.dataset.taskId=taskId;content.innerHTML=`<div class="node-kicker">TASK · ${escapeHTML(status.toUpperCase())}</div><div class="node-body">${markdownToHTML(node.text)}</div><div class="task-node-footer"><span>${task?.scheduledOn?`Plan ${escapeHTML(task.scheduledOn)}`:task?.dueOn?`Due ${escapeHTML(task.dueOn)}`:"Not scheduled"}</span><button type="button" data-node-complete-task ${status==="done"?"disabled":""}>${status==="done"?"Completed":"Mark done"}</button></div>`;
       } else {const jdCode=jdCodeFromNode(node);content.innerHTML = `<div class="node-kicker">${jdCode?`ITEM · ${escapeHTML(formatJDCode(jdCode))}`:textMeta(node)}</div><div class="node-body">${markdownToHTML(node.text)}</div>`;}
+    } else if (node.type === "file" && taskIdFromNode(node)) {
+      const task=taskForNode(node),taskId=task.id,status=task.status||"inbox";element.classList.add("task-card");element.classList.toggle("task-complete",status==="done");element.dataset.taskId=taskId;content.innerHTML=`<div class="node-kicker">TASK · ${escapeHTML(status.toUpperCase())}</div><div class="node-body">${markdownToHTML(`# ${task.title}`)}</div><div class="task-node-footer"><span>${task.scheduledOn?`Plan ${escapeHTML(task.scheduledOn)}`:task.dueOn?`Due ${escapeHTML(task.dueOn)}`:"Not scheduled"}</span><button type="button" data-node-complete-task ${status==="done"?"disabled":""}>${status==="done"?"Completed":"Mark done"}</button></div>`;
     } else if (node.type === "link") {
       let linkTitle = "Saved link";
       try { linkTitle = new URL(node.url).hostname.replace(/^www\./, ""); } catch (_) {}
@@ -465,7 +624,7 @@ function renderNodes() {
     element.addEventListener("pointerdown", event => nodePointerDown(event, node));
     $$("[data-connection-side]",element).forEach(handle=>{handle.addEventListener("pointerdown",event=>startConnectionDrag(event,node,handle.dataset.connectionSide));handle.addEventListener("keydown",event=>{if(event.key==="Enter"||event.key===" "){event.preventDefault();event.stopPropagation();connectSource=node.id;connectSourceSide=handle.dataset.connectionSide;setTool("connect");toast("Choose a destination node");}});});
     const aiRun=$("[data-ai-run]",element);if(aiRun){aiRun.addEventListener("pointerdown",event=>event.stopPropagation());aiRun.addEventListener("click",event=>{event.stopPropagation();runAICard(node.id,{manual:true});});}
-    const taskComplete=$("[data-node-complete-task]",element);if(taskComplete){taskComplete.addEventListener("pointerdown",event=>event.stopPropagation());taskComplete.addEventListener("click",event=>{event.stopPropagation();taskStore()?.completeTask(element.dataset.taskId);renderNodes();renderToday();toast("Task completed");});}
+    const taskComplete=$("[data-node-complete-task]",element);if(taskComplete){taskComplete.addEventListener("pointerdown",event=>event.stopPropagation());taskComplete.addEventListener("click",async event=>{event.stopPropagation();try{await completeTask(element.dataset.taskId);toast("Task completed");}catch(error){toast(error.message);}});}
     const portalButton=$("[data-open-subcanvas]",element);if(portalButton){portalButton.addEventListener("pointerdown",event=>event.stopPropagation());portalButton.addEventListener("click",event=>{event.stopPropagation();enterSubcanvas(element.dataset.subcanvasId);});element.addEventListener("dblclick",event=>{if(event.target.closest("button"))return;event.preventDefault();event.stopPropagation();enterSubcanvas(element.dataset.subcanvasId);});}
     element.addEventListener("click", event => {
       const anchor = event.target.closest("a");
@@ -650,6 +809,7 @@ function setTool(tool) {
 }
 
 function addNode(kind, point) {
+  if(!canonicalWritable){toast("Canonical files are read-only until repaired or restored");return null;}
   if(kind==="subcanvas")return createSubcanvas(point);if(kind==="task"){openTaskDialog();return;}
   const center = point || canvasPoint(canvas.getBoundingClientRect().left+canvas.clientWidth/2,canvas.getBoundingClientRect().top+canvas.clientHeight/2);
   const presets={
@@ -678,41 +838,67 @@ function renderInspector() {
   if (selected.kind==="node") {
     let contentField="";
     if (item.type==="text"&&isAICard(item)){const config=parseAICard(item);contentField=`<label class="field"><span>Operator name</span><input data-key="aiTitle" value="${escapeHTML(config.title)}"></label><label class="field"><span>AI instructions</span><textarea data-key="aiPrompt">${escapeHTML(config.prompt)}</textarea></label><div class="field-hint">Incoming connections become context. The generated note updates automatically when that context changes.</div>`;}
-    else if(item.type==="text"&&taskIdFromNode(item)){const task=taskStore()?.task(taskIdFromNode(item))||{status:"inbox"},statuses=["inbox","next","scheduled","waiting","done","cancelled"];contentField=`<label class="field"><span>Markdown</span><textarea data-key="text">${escapeHTML(item.text)}</textarea></label><label class="field"><span>Task status</span><select data-task-key="status">${statuses.map(status=>`<option value="${status}" ${task.status===status?"selected":""}>${status[0].toUpperCase()+status.slice(1)}</option>`).join("")}</select></label><div class="field-row"><label class="field"><span>Scheduled</span><input type="date" data-task-key="scheduledOn" value="${escapeHTML(task.scheduledOn||"")}"></label><label class="field"><span>Due</span><input type="date" data-task-key="dueOn" value="${escapeHTML(task.dueOn||"")}"></label></div><label class="field"><span>Priority</span><select data-task-key="priority"><option value="" ${task.priority==null?"selected":""}>None</option><option value="1" ${task.priority===1?"selected":""}>High</option><option value="2" ${task.priority===2?"selected":""}>Medium</option><option value="3" ${task.priority===3?"selected":""}>Low</option></select></label>`;}
+    else if(item.type==="file"&&taskIdFromNode(item)){const task=taskForNode(item),statuses=["inbox","next","scheduled","waiting","done","cancelled"];contentField=`<label class="field"><span>Task title</span><input data-task-key="title" value="${escapeHTML(task.title)}"></label><label class="field"><span>Task status</span><select data-task-key="status">${statuses.map(status=>`<option value="${status}" ${task.status===status?"selected":""}>${status[0].toUpperCase()+status.slice(1)}</option>`).join("")}</select></label><div class="field-row"><label class="field"><span>Scheduled</span><input type="date" data-task-key="scheduledOn" value="${escapeHTML(task.scheduledOn||"")}"></label><label class="field"><span>Due</span><input type="date" data-task-key="dueOn" value="${escapeHTML(task.dueOn||"")}"></label></div><label class="field"><span>Priority</span><select data-task-key="priority"><option value="" ${task.priority==null?"selected":""}>None</option><option value="1" ${task.priority===1?"selected":""}>High</option><option value="2" ${task.priority===2?"selected":""}>Medium</option><option value="3" ${task.priority===3?"selected":""}>Low</option></select></label><button type="button" class="button ghost delete-task-everywhere">Delete task everywhere</button>`;}
     else if (item.type==="text") contentField=`<label class="field"><span>Markdown</span><textarea data-key="text">${escapeHTML(item.text)}</textarea></label>`;
     if (item.type==="link") contentField=`<label class="field"><span>URL</span><input data-key="url" value="${escapeHTML(item.url)}"></label>`;
-    if (item.type==="file") {const subcanvasId=subcanvasIdFromNode(item),subcanvas=subcanvasId&&workspace.canvases[subcanvasId];contentField=subcanvas?`<label class="field"><span>${subcanvas.jdCode?`${escapeHTML(formatJDCode(subcanvas.jdCode))} title`:"Canvas title"}</span><input data-canvas-title="${escapeHTML(subcanvasId)}" value="${escapeHTML(subcanvas.jdTitle||subcanvas.title)}"></label><div class="field-hint">This portal is a standard JSON Canvas file node. Double-click it or zoom in to enter the nested canvas.</div><button type="button" class="button open-subcanvas-inspector" data-open-canvas="${escapeHTML(subcanvasId)}">Open sub-canvas ↘</button>`:`<label class="field"><span>File path</span><input data-key="file" value="${escapeHTML(item.file)}"></label><label class="field"><span>Subpath</span><input data-key="subpath" value="${escapeHTML(item.subpath||"")}"></label>`;}
+    if (item.type==="file"&&!taskIdFromNode(item)) {const subcanvasId=subcanvasIdFromNode(item),subcanvas=subcanvasId&&workspace.canvases[subcanvasId];contentField=subcanvas?`<label class="field"><span>${subcanvas.jdCode?`${escapeHTML(formatJDCode(subcanvas.jdCode))} title`:"Canvas title"}</span><input data-canvas-title="${escapeHTML(subcanvasId)}" value="${escapeHTML(subcanvas.jdTitle||subcanvas.title)}"></label><div class="field-hint">This portal is a standard JSON Canvas file node. Double-click it or zoom in to enter the nested canvas.</div><button type="button" class="button open-subcanvas-inspector" data-open-canvas="${escapeHTML(subcanvasId)}">Open sub-canvas ↘</button>`:`<label class="field"><span>File path</span><input data-key="file" value="${escapeHTML(item.file)}"></label><label class="field"><span>Subpath</span><input data-key="subpath" value="${escapeHTML(item.subpath||"")}"></label>`;}
     if (item.type==="group") contentField=`<label class="field"><span>Label</span><input data-key="label" value="${escapeHTML(item.label||"")}"></label><label class="field"><span>Background path</span><input data-key="background" value="${escapeHTML(item.background||"")}"></label>`;
     panel.innerHTML=`<div class="inspector-head"><h3>${taskIdFromNode(item)?"Task":item.type[0].toUpperCase()+item.type.slice(1)+" node"}</h3><button class="close-inspector">×</button></div><form class="inspector-form">${contentField}<div class="field-row"><label class="field"><span>X</span><input type="number" data-key="x" value="${item.x}"></label><label class="field"><span>Y</span><input type="number" data-key="y" value="${item.y}"></label></div><div class="field-row"><label class="field"><span>Width</span><input type="number" data-key="width" value="${item.width}"></label><label class="field"><span>Height</span><input type="number" data-key="height" value="${item.height}"></label></div><label class="field"><span>Color preset</span><div class="color-list">${colorButtons}</div></label><button type="button" class="danger-btn">Delete node</button></form>`;
   } else {
     panel.innerHTML=`<div class="inspector-head"><h3>Connection</h3><button class="close-inspector">×</button></div><form class="inspector-form"><label class="field"><span>Label</span><input data-key="label" value="${escapeHTML(item.label||"")}"></label><div class="field-row"><label class="field"><span>From side</span><select data-key="fromSide">${sideOptions(item.fromSide)}</select></label><label class="field"><span>To side</span><select data-key="toSide">${sideOptions(item.toSide)}</select></label></div><label class="field"><span>Color preset</span><div class="color-list">${colorButtons}</div></label><button type="button" class="danger-btn">Delete connection</button></form>`;
   }
   $(".close-inspector",panel).onclick=()=>{selected=null;shell.classList.remove("inspector-open");render();};
+  if(!canonicalWritable) $$('input,select,textarea,button:not(.close-inspector)',panel).forEach(control=>{control.disabled=true;control.title="Canonical files are read-only until repaired or restored.";});
   $$("[data-key]",panel).forEach(input=>input.addEventListener("input",()=>{
     const before=aiCardSignatures(),key=input.dataset.key;
     if(key==="aiTitle"||key==="aiPrompt"){const config=parseAICard(item);item.text=buildAICardText(key==="aiTitle"?input.value:config.title,key==="aiPrompt"?input.value:config.prompt);}
     else item[key]=input.type==="number"?Math.round(Number(input.value)):input.value;
-    if(key==="text"){const code=jdCodeFromNode(item),entry=jdEntries()[code],heading=item.text.match(/^#\s+(.+)$/m)?.[1];if(entry&&heading){const formatted=formatJDCode(code),title=(heading.startsWith(formatted)?heading.slice(formatted.length).replace(/^\s*(?:—|-)\s*/,""):heading).trim();if(title)entry.title=title;}const taskId=taskIdFromNode(item);if(taskId&&heading)taskStore()?.updateTask(taskId,{title:heading});}
+    if(key==="text"){const code=jdCodeFromNode(item),entry=jdEntries()[code],heading=item.text.match(/^#\s+(.+)$/m)?.[1];if(entry&&heading){const formatted=formatJDCode(code),title=(heading.startsWith(formatted)?heading.slice(formatted.length).replace(/^\s*(?:—|-)\s*/,""):heading).trim();if(title)entry.title=title;}}
     if (input.tagName==="SELECT" && !input.value) delete item[key];
     scheduleSave(); renderNodes(); renderEdges(); renderMinimap(); scheduleChangedAICards(before);
   }));
-  $$('[data-task-key]',panel).forEach(input=>input.addEventListener("input",()=>{const id=taskIdFromNode(item),key=input.dataset.taskKey,value=key==="priority"?(input.value?Number(input.value):null):input.value||null;if(!id)return;const patch={[key]:value};if(key==="status")patch.completedAt=value==="done"?new Date().toISOString():null;taskStore()?.updateTask(id,patch);scheduleSave();renderNodes();renderToday();}));
+  $$('[data-task-key]',panel).forEach(input=>{
+    const readPatch=()=>{const id=taskIdFromNode(item),key=input.dataset.taskKey,value=key==="priority"?(input.value?Number(input.value):null):input.value||null;if(!id)return null;const patch={[key]:value};if(key==="status")patch.completedAt=value==="done"?new Date().toISOString():null;return {id,patch};};
+    input.addEventListener("input",()=>{const next=readPatch();if(next)scheduleTaskFieldUpdate(next.id,next.patch);});
+    input.addEventListener("change",()=>{const next=readPatch();if(next)flushTaskFieldUpdate(next.id,next.patch);});
+    input.addEventListener("blur",()=>{const next=readPatch();if(next&&taskUpdateTimers.has(next.id))flushTaskFieldUpdate(next.id,next.patch);});
+  });
   const canvasTitleField=$("[data-canvas-title]",panel);if(canvasTitleField)canvasTitleField.addEventListener("input",()=>{const record=workspace.canvases[canvasTitleField.dataset.canvasTitle];if(!record)return;const title=canvasTitleField.value||"Untitled";if(record.jdCode){record.jdTitle=title;record.title=jdDisplayTitle(record.jdCode,title);const entry=jdEntries()[record.jdCode];if(entry)entry.title=title;}else record.title=title;scheduleSave();renderNodes();renderWorkspaceNavigation();});
   const openCanvas=$("[data-open-canvas]",panel);if(openCanvas)openCanvas.onclick=()=>enterSubcanvas(openCanvas.dataset.openCanvas);
   $$(".color-choice",panel).forEach(button=>button.onclick=()=>{item.color=button.dataset.color;scheduleSave();render();});
+  const deleteEverywhere=$(".delete-task-everywhere",panel);if(deleteEverywhere)deleteEverywhere.onclick=()=>deleteTaskEverywhere(taskIdFromNode(item));
   $(".danger-btn",panel).onclick=deleteSelection;
 }
 function sideOptions(value) { return ["","top","right","bottom","left"].map(s=>`<option value="${s}" ${value===s?"selected":""}>${s||"Auto"}</option>`).join(""); }
-function deleteSelection() {
-  if (!selected) return;const before=aiCardSignatures();
+async function deleteTaskEverywhere(taskId){
+  if(!taskId||!taskRepository)return;
+  if(!confirm("Delete this task, its canonical file, and every canvas placement? This cannot be undone."))return;
+  const affected=lifeIndex?.placementsForEntity(taskId).map((placement)=>placement.canvasId)||[];
+  try{
+    await flushPendingWorkspaceEdits();
+    await enqueueMutation(async()=>{await taskRepository.deleteTask(taskId);await reloadCanvasDocuments(affected);});
+    selected=null;shell.classList.remove("inspector-open");render();renderToday();toast("Task deleted everywhere");
+  }catch(error){toast(error.message);}
+}
+async function deleteSelection() {
+  if (!canonicalWritable) { toast("Canonical files are read-only until repaired or restored"); return; }
+  if (!selected) return;const before=aiCardSignatures();let canonicalMutation=false;
   if (selected.kind==="node") {
     const node=documentData.nodes.find(item=>item.id===selected.id),subcanvasId=subcanvasIdFromNode(node),taskId=taskIdFromNode(node),jdPair=Object.entries(jdEntries()).find(([,entry])=>entry.parentCanvasId===currentCanvasId&&entry.nodeId===selected.id);
     if(subcanvasId&&!confirm(`Delete “${workspace.canvases[subcanvasId].title}” and every canvas nested inside it?`))return;
-    if(subcanvasId)deleteCanvasTree(subcanvasId);else if(jdPair)delete workspace.johnnyDecimal.entries[jdPair[0]];if(taskId)taskStore()?.deleteTask(taskId);
-    documentData.nodes=documentData.nodes.filter(n=>n.id!==selected.id);
-    documentData.edges=(documentData.edges||[]).filter(e=>e.fromNode!==selected.id&&e.toNode!==selected.id);
+    if(subcanvasId)deleteCanvasTree(subcanvasId);else if(jdPair)delete workspace.johnnyDecimal.entries[jdPair[0]];
+    if(taskId){
+      canonicalMutation=true;
+      try{
+        await flushPendingWorkspaceEdits();
+        await enqueueMutation(async()=>{await taskRepository.removePlacement(currentCanvasId,selected.id);await reloadCanvasDocuments([currentCanvasId]);});
+      }catch(error){toast(error.message);return;}
+    } else {
+      documentData.nodes=documentData.nodes.filter(n=>n.id!==selected.id);
+      documentData.edges=(documentData.edges||[]).filter(e=>e.fromNode!==selected.id&&e.toNode!==selected.id);
+    }
   } else documentData.edges=documentData.edges.filter(e=>e.id!==selected.id);
-  selected=null;shell.classList.remove("inspector-open");scheduleSave();render();scheduleChangedAICards(before);toast("Deleted");
+  selected=null;shell.classList.remove("inspector-open");if(!canonicalMutation) scheduleSave();render();scheduleChangedAICards(before);toast("Deleted");
 }
 
 function updateCounts() {
@@ -748,14 +934,46 @@ function exportCanvas() {
   downloadJSON(documentData,slug($("#canvasTitle").value||"life-canvas")+".canvas");toast("Current canvas exported");
 }
 async function exportWorkspace(){
-  persistWorkspace();const store=await window.orbitLifeReady,lifeData=store?.exportSnapshot?.()||null;downloadJSON({format:"orbit-workspace",version:1,exportedAt:new Date().toISOString(),workspace,lifeData},`${slug(workspace.canvases[workspace.rootId].title)}.balaur.json`);toast(`${Object.keys(workspace.canvases).length} canvases and life data exported`);
-}
-function validWorkspaceBundle(data){
-  const candidate=data?.format==="orbit-workspace"?data.workspace:data;if(candidate?.version!==1||!candidate.canvases||typeof candidate.canvases!=="object")return null;const records=Object.values(candidate.canvases);if(!records.length||!records.every(record=>record&&typeof record.id==="string"&&typeof record.title==="string"&&isCanvas(record.document)))return null;candidate.rootId=candidate.canvases[candidate.rootId]?candidate.rootId:records[0].id;candidate.activeId=candidate.canvases[candidate.activeId]?candidate.activeId:candidate.rootId;return normalizeWorkspace(candidate);
+  if(!vaultStore)throw new Error("Canonical files are unavailable.");
+  await flushPendingWorkspaceEdits();
+  saveCurrentCanvasState(); workspace.activeId=currentCanvasId; await persistWorkspace();
+  const {bundle,diagnostics}=await exportBundle(vaultStore.vault);
+  assertCompleteExport(diagnostics);
+  downloadJSON(JSON.parse(serializeBundle(bundle)),`${slug(workspace.canvases[workspace.rootId].title)}.orbit.json`);
+  toast(`${Object.keys(workspace.canvases).length} canvases and canonical files exported`);
 }
 async function importCanvas(file) {
-  try {const parsed=JSON.parse(await file.text()),importedWorkspace=validWorkspaceBundle(parsed);if(importedWorkspace){if(!confirm(`Import this Balaur space with ${Object.keys(importedWorkspace.canvases).length} canvases? Your current local space will be replaced.`))return;workspace=importedWorkspace;currentCanvasId=workspace.activeId;documentData=workspace.canvases[currentCanvasId].document;camera=workspace.canvases[currentCanvasId].camera||{x:80,y:55,zoom:1};selected=null;$("#canvasTitle").value=canvasRecord().title;persistWorkspace();const store=await window.orbitLifeReady;if(store){store.importSnapshot(parsed.lifeData||{schemaVersion:1});store.syncWorkspaceIndex(workspace);reconcileTaskMarkers(store);}render();fitView();toast("Whole workspace and life data imported");return;}if(!isCanvas(parsed))throw new Error("Not a valid JSON Canvas document or Balaur workspace");documentData={nodes:parsed.nodes||[],edges:parsed.edges||[]};selected=null;reconcileTaskMarkers();scheduleSave();render();fitView();toast("Canvas imported");}
-  catch(error){alert(`Could not import this file.\n\n${error.message}`);}
+  try {
+    const parsed=JSON.parse(await file.text());
+    if(parsed?.format==="orbit-workspace"){
+      if(!confirm("Import this whole Balaur space? Your current canonical vault will be replaced."))return;
+      await flushPendingWorkspaceEdits();
+      const stagingVault=new IndexedDbVault(`orbit-vault-${uid("import")}`);
+      await importBundle(stagingVault,JSON.stringify(parsed));
+      // Validate and index the complete staging space before touching the
+      // canonical vault. IndexedDB restore is one transaction, so reloads use
+      // the same orbit-vault name rather than a stranded import database.
+      const stagingIndex=new MemoryIndex();
+      const stagingCanvasIds=new Map(Object.values(parsed.workspace.canvases||{}).map(record=>[record.path,record.id]));
+      const stagingCanvasIdFromPath=path=>stagingCanvasIds.get(path)||String(path).split("/").pop().replace(/\.canvas$/,"");
+      const stagingIndexer=new LifeIndexer({vault:stagingVault,index:stagingIndex,canvasIdFromPath:stagingCanvasIdFromPath});
+      await stagingIndexer.rebuild();
+      const audit=await auditIndex(stagingVault,stagingIndex,{canvasIdFromPath:stagingCanvasIdFromPath});
+      if(!audit.ok)throw new Error(`Imported space failed index audit: ${audit.problems.map(problem=>problem.message).join("; ")}`);
+      const snapshot=await stagingVault.snapshot();
+      const canonicalVault=new IndexedDbVault("orbit-vault");
+      await canonicalVault.restore(snapshot);
+      const nextStore=new WorkspaceStore(canonicalVault),result=await nextStore.load();
+      if(!result?.workspace)throw new Error("Canonical vault activation did not produce a workspace");
+      // Switch application globals only after canonical activation and reload
+      // have both succeeded.
+      vaultStore=nextStore; workspace=result.workspace; window.orbitVaultStore=vaultStore; configureLifeRuntime(canonicalVault); await lifeIndexer.rebuild();
+      currentCanvasId=workspace.activeId; documentData=workspace.canvases[currentCanvasId].document; camera=workspace.canvases[currentCanvasId].camera||{x:80,y:55,zoom:1}; selected=null; $("#canvasTitle").value=canvasRecord().title; render(); fitView();
+      const stats=lifeIndexer.stats();setIndexStatus(`Files · ${stats.sourceFiles} indexed`,`${stats.tasks} tasks · ${stats.habits} habits · ${stats.diagnostics} diagnostics`);toast("Whole workspace and canonical files imported");return;
+    }
+    if(!isCanvas(parsed))throw new Error("Not a valid JSON Canvas document or version-2 Balaur workspace");
+    documentData={nodes:parsed.nodes,edges:parsed.edges};workspace.canvases[currentCanvasId].document=documentData;selected=null;scheduleSave();render();fitView();toast("Canvas imported");
+  } catch(error){alert(`Could not import this file.\n\n${error.message}`);}
 }
 
 // Canvas-aware assistant prototype. A remote model should produce these operations,
@@ -784,7 +1002,8 @@ function validateCanvasOperations(operations) {
   return {draft,themes};
 }
 function applyCanvasOperations(operations) {
-  const before=aiCardSignatures(),{draft,themes}=validateCanvasOperations(operations);documentData=draft;themes.forEach(applyCanvasTheme);reconcileTaskMarkers();
+  if(!canonicalWritable)throw new Error("Canonical files are read-only until repaired or restored.");
+  const before=aiCardSignatures(),{draft,themes}=validateCanvasOperations(operations);documentData=draft;workspace.canvases[currentCanvasId].document=documentData;themes.forEach(applyCanvasTheme);
   selected=null;shell.classList.remove("inspector-open");scheduleSave();render();updateAssistantContext();scheduleChangedAICards(before);
 }
 
@@ -924,8 +1143,10 @@ async function runAICard(cardId,{manual=false}={}) {
   const card=documentData.nodes.find(node=>node.id===cardId&&isAICard(node));if(!card)return;const state=aiCardRuntime.get(cardId)||{};clearTimeout(state.timer);
   if(state.running){state.pending=true;aiCardRuntime.set(cardId,state);return;}if(!aiSettings.apiKey){state.status="Configure an AI provider";aiCardRuntime.set(cardId,state);renderNodes();setAssistantOpen(true);openAISettings();return;}
   if(aiCardHasCycle(cardId)&&!manual){state.status="Paused · connection cycle";aiCardRuntime.set(cardId,state);renderNodes();return;}
+  const config=parseAICard(card),inputs=inputNodesForAICard(card.id);
+  await preloadAIFileInputs(inputs);
   const signature=aiCardSignature(card);if(!manual&&state.lastSignature===signature){state.status="Up to date";aiCardRuntime.set(cardId,state);renderNodes();return;}
-  const config=parseAICard(card),inputs=inputNodesForAICard(card.id);state.running=true;state.pending=false;state.status=`Reading ${inputs.length} input${inputs.length===1?"":"s"}…`;aiCardRuntime.set(cardId,state);renderNodes();
+  state.running=true;state.pending=false;state.status=`Reading ${inputs.length} input${inputs.length===1?"":"s"}…`;aiCardRuntime.set(cardId,state);renderNodes();
   try{
     const inputText=inputs.length?inputs.map((node,index)=>`## Input ${index+1}: ${nodeTitle(node)}\nType: ${node.type}\n${nodeAIContent(node).slice(0,30000)}`).join("\n\n---\n\n"):"No connected inputs.";
     const response=await providerFetch(aiSettings,"/chat/completions",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({model:aiSettings.model,messages:[{role:"system",content:"You generate one useful Markdown note from connected JSON Canvas inputs. Follow the operator instructions. Return only the note Markdown, without code fences, commentary, or JSON. Do not include HTML or scripts."},{role:"user",content:`Operator: ${config.title}\nInstructions:\n${config.prompt}\n\nConnected inputs:\n${inputText}`}],temperature:.3,max_tokens:2200})}),body=await response.json();
@@ -937,7 +1158,6 @@ async function runAICard(cardId,{manual=false}={}) {
   finally{state.running=false;const pending=state.pending;state.pending=false;aiCardRuntime.set(cardId,state);renderNodes();if(pending)scheduleAICard(cardId,250);}
 }
 
-window.orbitCanvas={getDocument:()=>clone(documentData),getWorkspace:()=>clone(workspace),getCurrentCanvas:()=>({id:currentCanvasId,title:canvasRecord().title,trail:canvasTrail().map(record=>({id:record.id,title:record.title}))}),getSummary:canvasSummary,validateOperations:validateCanvasOperations,applyOperations:applyCanvasOperations,runAICard,createSubcanvas,createJDEntry,createTask,goToJD,loadJohnnyDecimalStarter,setView:setAppView,switchCanvas,exportWorkspace};
 applyCanvasTheme(localStorage.getItem("orbit-canvas-theme")||"default");updateProviderUI();
 
 $$("[data-add]").forEach(button=>button.onclick=()=>button.dataset.add==="ai-note"?openAINoteDialog():addNode(button.dataset.add));$$('[data-app-view]').forEach(button=>button.onclick=()=>setAppView(button.dataset.appView));
@@ -945,14 +1165,14 @@ $("#newGroup").onclick=()=>addNode("group");$("#newCanvas").onclick=()=>createSu
 $$(".nav-item[data-filter]").forEach(button=>button.onclick=()=>{activeFilter=button.dataset.filter;$$(".nav-item[data-filter]").forEach(b=>b.classList.toggle("active",b===button));renderNodes();renderEdges();});
 $$(".tool").forEach(button=>button.onclick=()=>{const tool=button.dataset.tool;if(tool==="note")setTool("note");else setTool(tool);});
 $("#zoomIn").onclick=()=>setZoom(camera.zoom*1.2);$("#zoomOut").onclick=()=>setZoom(camera.zoom/1.2);$("#zoomLabel").onclick=()=>setZoom(1);$("#fitView").onclick=fitView;
-$("#exportButton").onclick=exportCanvas;$("#exportWorkspaceButton").onclick=exportWorkspace;$("#importButton").onclick=()=>$("#fileInput").click();$("#fileInput").onchange=e=>{if(e.target.files[0])importCanvas(e.target.files[0]);e.target.value="";};
+$("#exportButton").onclick=exportCanvas;$("#exportWorkspaceButton").onclick=()=>exportWorkspace().catch(error=>{alert(`Could not export a complete backup.\n\n${error.message}`);});$("#importButton").onclick=()=>$("#fileInput").click();$("#fileInput").onchange=e=>{if(e.target.files[0])importCanvas(e.target.files[0]);e.target.value="";};
 $("#sidebarToggle").onclick=()=>shell.classList.toggle("sidebar-closed");$("#sidebar").addEventListener("click",event=>{if(narrowShell.matches&&event.target.closest("button"))shell.classList.add("sidebar-closed");});
 $("#assistantButton").onclick=()=>setAssistantOpen(!$("#aiPanel").classList.contains("open"));$("#closeAssistant").onclick=()=>setAssistantOpen(false);$("#openAISettings").onclick=openAISettings;
 $("#aiForm").onsubmit=event=>{event.preventDefault();const input=$("#aiPrompt"),prompt=input.value;input.value="";runAssistant(prompt);};
 $("#aiPrompt").onkeydown=event=>{if(event.key==="Enter"&&!event.shiftKey){event.preventDefault();$("#aiForm").requestSubmit();}};
 $$(".ai-suggestions button").forEach(button=>button.onclick=()=>runAssistant(button.textContent));
 $("#newTodayTask").onclick=()=>openTaskDialog({today:true});$("#closeTaskDialog").onclick=$("#cancelTaskDialog").onclick=()=>$("#taskDialog").close();$("#taskForm").onsubmit=async event=>{event.preventDefault();const result=$("#taskResult"),button=$("#createTaskButton");try{if(!event.currentTarget.reportValidity())return;button.disabled=true;await createTask({title:$("#taskTitle").value,notes:$("#taskNotes").value,canvasId:$("#taskCanvas").value,status:$("#taskStatus").value,scheduledOn:$("#taskScheduledOn").value,dueOn:$("#taskDueOn").value,priority:$("#taskPriority").value});$("#taskDialog").close();}catch(error){result.className="settings-test error";result.textContent=error.message;}finally{button.disabled=false;}};$("#todayQuickAdd").onsubmit=async event=>{event.preventDefault();const input=$("#todayTaskTitle"),title=input.value.trim();if(!title)return;const button=$("button",event.currentTarget);button.disabled=true;try{await createTask({title,status:"scheduled",scheduledOn:localDateISO(),canvasId:currentCanvasId});input.value="";renderToday();}catch(error){toast(error.message);}finally{button.disabled=false;}};
-$("#closeJohnnyDecimal").onclick=$("#cancelJohnnyDecimal").onclick=()=>$("#johnnyDecimalDialog").close();$("#loadJDStarter").onclick=loadJohnnyDecimalStarter;$("#jdParent").onchange=updateJDDialog;$("#goToJD").onclick=()=>goToJD($("#jdLookup").value);$("#jdLookup").onkeydown=event=>{if(event.key==="Enter"){event.preventDefault();goToJD(event.currentTarget.value);}};$("#exportJDWorkspace").onclick=exportWorkspace;$("#johnnyDecimalForm").onsubmit=event=>{event.preventDefault();const result=$("#jdCreateResult");try{if(!event.currentTarget.reportValidity())return;createJDEntry({parentCanvasId:$("#jdParent").value,code:$("#jdCode").value,title:$("#jdTitle").value,itemFormat:$("#jdItemFormat").value});}catch(error){result.className="settings-test error";result.textContent=error.message;}};
+$("#closeJohnnyDecimal").onclick=$("#cancelJohnnyDecimal").onclick=()=>$("#johnnyDecimalDialog").close();$("#loadJDStarter").onclick=loadJohnnyDecimalStarter;$("#jdParent").onchange=updateJDDialog;$("#goToJD").onclick=()=>goToJD($("#jdLookup").value);$("#jdLookup").onkeydown=event=>{if(event.key==="Enter"){event.preventDefault();goToJD(event.currentTarget.value);}};$("#exportJDWorkspace").onclick=()=>exportWorkspace().catch(error=>{alert(`Could not export a complete backup.\n\n${error.message}`);});$("#johnnyDecimalForm").onsubmit=event=>{event.preventDefault();const result=$("#jdCreateResult");try{if(!event.currentTarget.reportValidity())return;createJDEntry({parentCanvasId:$("#jdParent").value,code:$("#jdCode").value,title:$("#jdTitle").value,itemFormat:$("#jdItemFormat").value});}catch(error){result.className="settings-test error";result.textContent=error.message;}};
 $("#closeAINote").onclick=$("#cancelAINote").onclick=()=>$("#aiNoteDialog").close();
 $("#aiNoteForm").onsubmit=event=>{event.preventDefault();const prompt=$("#aiNotePrompt").value.trim();if(prompt)createAINote(prompt);};
 $("#closeAISettings").onclick=$("#cancelAISettings").onclick=()=>$("#aiSettingsDialog").close();
@@ -961,7 +1181,7 @@ $("#aiSettingsForm").onsubmit=event=>{event.preventDefault();if(!event.currentTa
 $("#testAIProvider").onclick=async()=>{const form=$("#aiSettingsForm");if(!form.reportValidity())return;const button=$("#testAIProvider");try{const settings=settingsFromForm();button.disabled=true;setSettingsResult("Testing direct browser connection…");setSettingsResult(await testAIProvider(settings),"success");}catch(error){setSettingsResult(error.message,"error");}finally{button.disabled=false;}};
 $("#clearAIProvider").onclick=()=>{persistAISettings({...aiSettings,apiKey:"",rememberKey:false});localStorage.removeItem(AI_SECRET_KEY);sessionStorage.removeItem(AI_SECRET_KEY);$("#aiSettingsDialog").close();toast("Using local canvas tools");};
 $("#canvasTitle").oninput=()=>{saveCurrentCanvasState();scheduleSave();renderWorkspaceNavigation();};$("#canvasTitle").onblur=()=>{$("#canvasTitle").value=canvasRecord().title;};
-$("#resetDemo").onclick=()=>{if(confirm("Reset the whole space to the age-30 Johnny Decimal starter? Every nested canvas and local change will be replaced.")){workspace=createJohnnyDecimalStarterWorkspace();currentCanvasId=workspace.rootId;documentData=workspace.canvases[currentCanvasId].document;camera={x:80,y:55,zoom:.78};selected=null;$("#canvasTitle").value=canvasRecord().title;persistWorkspace();resetLifeDatabase();render();fitView();toast("Johnny Decimal starter restored");}};
+$("#resetDemo").onclick=loadJohnnyDecimalStarter;
 $("#minimap").onclick=fitView;
 
 window.addEventListener("keydown",event=>{
@@ -977,8 +1197,10 @@ window.addEventListener("keydown",event=>{
 });
 window.addEventListener("keyup",event=>{if(event.code==="Space")spaceDown=false;});
 window.addEventListener("resize",()=>{applyCamera();});
-window.addEventListener("beforeunload",persistWorkspace);
-window.addEventListener("orbit:life-store-ready",refreshLifeViews);
-
+// Async vault writes cannot be awaited from beforeunload. Durability is
+// provided by the serialized queue and resolved save state; users should keep
+// the page open until a pending save completes.
 vaultReady=bootCanvasApp();
 window.orbitVaultReady=vaultReady;
+await vaultReady;
+window.orbitCanvas={getDocument:()=>clone(documentData),getWorkspace:()=>clone(workspace),getCurrentCanvas:()=>({id:currentCanvasId,title:canvasRecord().title,trail:canvasTrail().map(record=>({id:record.id,title:record.title}))}),getSummary:canvasSummary,validateOperations:validateCanvasOperations,applyOperations:applyCanvasOperations,runAICard,createSubcanvas,createJDEntry,createTask,goToJD,loadJohnnyDecimalStarter,rebuildIndex:rebuildLifeIndex,setView:setAppView,switchCanvas,exportWorkspace};

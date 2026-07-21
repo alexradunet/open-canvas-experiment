@@ -10,8 +10,8 @@
 import { ParseError } from "./vault-errors.js";
 
 const BOM = "\uFEFF";
-const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
-const INSTANT_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/;
+const DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
+const INSTANT_RE = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(\.\d+)?(Z|[+-]\d{2}:\d{2})$/;
 const ENUM_RE = /^[a-z][a-z0-9_-]*$/;
 const NUMBER_RE = /^-?(0|[1-9]\d*)(\.\d+)?([eE][+-]?\d+)?$/;
 const KEY_RE = /^([A-Za-z0-9_-]+)[ \t]*:(.*)$/;
@@ -53,6 +53,42 @@ export function hasFrontmatter(text) { return splitFrontmatter(text) !== null; }
 
 // --- constrained value grammar (plan §8.2) -----------------------------------
 
+function daysInMonth(year, month) {
+  return new Date(Date.UTC(year, month, 0)).getUTCDate();
+}
+
+export function isValidLocalDate(value) {
+  const m = DATE_RE.exec(String(value));
+  if (!m) return false;
+  const year = Number(m[1]), month = Number(m[2]), day = Number(m[3]);
+  return month >= 1 && month <= 12 && day >= 1 && day <= daysInMonth(year, month);
+}
+
+export function isValidInstant(value) {
+  const m = INSTANT_RE.exec(String(value));
+  if (!m || !isValidLocalDate(`${m[1]}-${m[2]}-${m[3]}`)) return false;
+  const hour = Number(m[4]), minute = Number(m[5]), second = Number(m[6]);
+  if (hour > 23 || minute > 59 || second > 59) return false;
+  if (m[8] !== "Z") {
+    const offset = /^([+-])(\d{2}):(\d{2})$/.exec(m[8]);
+    if (!offset || Number(offset[2]) > 23 || Number(offset[3]) > 59) return false;
+  }
+  return Number.isFinite(Date.parse(String(value)));
+}
+
+export function isValidIanaTimezone(value) {
+  if (typeof value !== "string" || !value) return false;
+  try { new Intl.DateTimeFormat("en-US", { timeZone: value }).format(); return true; }
+  catch { return false; }
+}
+
+export function localDateForInstant(instant, timezone = "UTC") {
+  if (!isValidInstant(instant) || !isValidIanaTimezone(timezone)) throw new ParseError("Cannot derive local date", { code: "FM_BAD_TEMPORAL" });
+  const parts = new Intl.DateTimeFormat("en-CA", { timeZone: timezone, year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(new Date(instant));
+  const values = Object.fromEntries(parts.filter((p) => p.type !== "literal").map((p) => [p.type, p.value]));
+  return `${values.year}-${values.month}-${values.day}`;
+}
+
 function parseScalar(raw, kind) {
   const value = String(raw).trim();
   switch (kind) {
@@ -66,16 +102,16 @@ function parseScalar(raw, kind) {
     case "date": {
       let s;
       try { s = JSON.parse(value); } catch { s = null; }
-      if (typeof s !== "string" || !DATE_RE.test(s)) {
-        throw new ParseError(`Expected a YYYY-MM-DD date, got: ${raw}`, { code: "FM_BAD_DATE" });
+      if (typeof s !== "string" || !isValidLocalDate(s)) {
+        throw new ParseError(`Expected a valid YYYY-MM-DD date, got: ${raw}`, { code: "FM_BAD_DATE" });
       }
       return s;
     }
     case "instant": {
       let s;
       try { s = JSON.parse(value); } catch { s = null; }
-      if (typeof s !== "string" || !INSTANT_RE.test(s)) {
-        throw new ParseError(`Expected an ISO 8601 instant, got: ${raw}`, { code: "FM_BAD_INSTANT" });
+      if (typeof s !== "string" || !isValidInstant(s)) {
+        throw new ParseError(`Expected a valid ISO 8601 instant, got: ${raw}`, { code: "FM_BAD_INSTANT" });
       }
       return s;
     }
@@ -143,8 +179,12 @@ export function serializeValue(value, kind) {
   if (value === null || value === undefined) return "null";
   switch (kind) {
     case "string":
+      return JSON.stringify(String(value));
     case "date":
+      if (!isValidLocalDate(String(value))) throw new ParseError(`Cannot serialize invalid date: ${value}`, { code: "FM_BAD_DATE" });
+      return JSON.stringify(String(value));
     case "instant":
+      if (!isValidInstant(String(value))) throw new ParseError(`Cannot serialize invalid instant: ${value}`, { code: "FM_BAD_INSTANT" });
       return JSON.stringify(String(value));
     case "number":
       if (!Number.isFinite(value)) throw new ParseError(`Cannot serialize non-finite number`, { code: "FM_BAD_NUMBER" });
@@ -264,6 +304,17 @@ export function patchFields(text, patch, spec) {
 
   const out = fm.lines.slice(0, fm.openIdx + 1).concat(next, fm.lines.slice(fm.closeIdx));
   return fm.bom + out.join("");
+}
+
+// Replace only bytes after the closing delimiter. New body separators follow
+// the file's detected terminator, including CRLF files.
+export function replaceBody(text, body) {
+  const fm = splitFrontmatter(text);
+  if (!fm) throw new ParseError("Missing or unterminated frontmatter; refusing to write", { code: "FM_NO_DELIMITER" });
+  const head = fm.bom + fm.lines.slice(0, fm.closeIdx + 1).join("");
+  const separator = body ? fm.term : "";
+  const normalized = String(body ?? "").replace(/\r?\n/g, fm.term);
+  return head + separator + normalized;
 }
 
 // Serialize a fresh frontmatter block in a stable key order (for new files).

@@ -78,6 +78,14 @@ test("assertSafePath accepts clean paths and rejects unsafe ones", () => {
   assert.throws(() => assertSafePath("trail."), PathError);
   assert.throws(() => assertSafePath("trail "), PathError);
   assert.throws(() => assertSafePath("a\u0000b.md"), PathError);
+  assert.throws(() => assertSafePath("a//b"), PathError);
+  assert.throws(() => assertSafePath("a/b/"), PathError);
+  assert.throws(() => assertSafePath("a\\b"), PathError, "assertSafePath must not rewrite backslashes");
+});
+
+test("case folding catches portable full-fold collisions", () => {
+  assert.equal(caseFoldKey("Straße.md"), caseFoldKey("STRASSE.md"));
+  assert.equal(caseFoldKey("İ.md"), caseFoldKey("i\u0307.md"));
 });
 
 test("byteLength counts UTF-8 bytes, not JS string length", () => {
@@ -94,6 +102,7 @@ test("case-fold and Unicode-normalization collisions are detected", () => {
   assert.ok(samePathFold("Tasks/A.md", "tasks/a.md"));
   // NFD (e + combining acute) vs NFC (é) fold to the same key.
   assert.equal(caseFoldKey("cafe\u0301.md"), caseFoldKey("caf\u00e9.md"));
+  assert.equal(caseFoldKey("Straße.md"), caseFoldKey("STRASSE.md"));
 });
 
 test("slugify and entityPath produce the documented layout", () => {
@@ -235,6 +244,11 @@ test("habit, journal, and calendar-event round-trip", () => {
     createdAt: INST, updatedAt: INST, body: "Bring the previous imaging report.",
   };
   assert.deepEqual(plain(parseCalendarEvent(serializeCalendarEvent(event))), plain(event));
+});
+
+test("every habit-entry marker must be complete", () => {
+  const valid = serializeHabitEntry({ id: "entry-a", habit: "habit-walk", status: "done", value: 1, at: INST });
+  assert.throws(() => parseHabitEntries(`${valid}\n<!-- orbit:habit-entry id=entry-b habit=habit-walk status=done value=1`), ParseError);
 });
 
 test("habit-log carries local-date and parses check-in event markers", () => {

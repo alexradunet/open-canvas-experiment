@@ -13,7 +13,7 @@
 // sidecar; they must be inverses.
 
 import { serializeTask, parseTask, TaskCodec } from "./entity-codec.js";
-import { patchFields, splitFrontmatter } from "./frontmatter.js";
+import { patchFields, splitFrontmatter, replaceBody } from "./frontmatter.js";
 import { entityPath } from "./vault-path.js";
 import { isCanvas } from "./canvas-validate.js";
 import { SchemaError } from "./vault-errors.js";
@@ -26,14 +26,6 @@ const PATCH_KEYS = {
 };
 
 const DEFAULT_GEOMETRY = { x: 40, y: 40, width: 380, height: 220 };
-
-// Replace only the body, preserving the (already patched) frontmatter bytes.
-function replaceBody(text, body) {
-  const fm = splitFrontmatter(text);
-  if (!fm) throw new SchemaError("Cannot replace body: missing frontmatter", { code: "FM_NO_DELIMITER" });
-  const head = fm.bom + fm.lines.slice(0, fm.closeIdx + 1).join("");
-  return head + (body ? "\n" + body : "");
-}
 
 function randomToken() {
   const c = globalThis.crypto;
@@ -105,9 +97,13 @@ export class FileTaskRepository {
     }
     let next = patchFields(content, fmPatch, TaskCodec.spec);
     if ("body" in patch) next = replaceBody(next, patch.body);
+    // Validate domain values before touching the canonical file. patchFields
+    // only validates syntax and field shapes; parseTask enforces task enums and
+    // cross-field rules as well.
+    const parsed = parseTask(next);
     await this.vault.write(path, next, { expectedHash: hash });
     await this.indexer.indexFile(path, next, {});
-    return parseTask(next);
+    return parsed;
   }
 
   async completeTask(id) { return this.updateTask(id, { status: "done", completedAt: this.now() }); }
@@ -119,14 +115,23 @@ export class FileTaskRepository {
     const canvasPath = this.canvasPathFromId(canvasId);
     if (!canvasPath) throw new SchemaError(`No canvas path for id: ${canvasId}`, { code: "CANVAS_NOT_FOUND" });
     const stat = await this.vault.stat(canvasPath);
-    const doc = stat ? JSON.parse(await this.vault.read(canvasPath)) : { nodes: [], edges: [] };
+    if (!stat) throw new SchemaError(`Canvas not found: ${canvasPath}`, { code: "CANVAS_NOT_FOUND" });
+    let doc;
+    try { doc = JSON.parse(await this.vault.read(canvasPath)); }
+    catch (err) { throw new SchemaError(`Invalid canvas document: ${canvasPath}`, { code: "CANVAS_INVALID", cause: err }); }
     if (!isCanvas(doc)) throw new SchemaError(`Invalid canvas document: ${canvasPath}`, { code: "CANVAS_INVALID" });
     const g = { ...DEFAULT_GEOMETRY, ...geometry };
-    const node = { id: geometry.id || `node-${randomToken()}`, type: "file", file: taskPath, x: g.x, y: g.y, width: g.width, height: g.height };
+    if (![g.x, g.y, g.width, g.height].every((n) => typeof n === "number" && Number.isFinite(n)) || g.width < 0 || g.height < 0) {
+      throw new SchemaError("Placement geometry must be finite with non-negative dimensions", { code: "CANVAS_GEOMETRY_INVALID" });
+    }
+    const nodeId = geometry.id || `node-${randomToken()}`;
+    if (doc.nodes.some((n) => n.id === nodeId) || doc.edges.some((e) => e.id === nodeId)) throw new SchemaError(`Canvas id already exists: ${nodeId}`, { code: "CANVAS_ID_DUPLICATE" });
+    const node = { id: nodeId, type: "file", file: taskPath, x: g.x, y: g.y, width: g.width, height: g.height };
     if (geometry.color !== undefined) node.color = geometry.color;
     doc.nodes.push(node);
+    if (!isCanvas(doc)) throw new SchemaError(`Invalid canvas document: ${canvasPath}`, { code: "CANVAS_INVALID" });
     const content = JSON.stringify(doc, null, 2) + "\n";
-    await this.vault.write(canvasPath, content, { expectedHash: stat ? stat.hash : null });
+    await this.vault.write(canvasPath, content, { expectedHash: stat.hash });
     await this.indexer.indexFile(canvasPath, content, {});
     await this.indexer.reindexPlacements();
     return { canvasId, nodeId: node.id, canvasPath };
@@ -138,7 +143,10 @@ export class FileTaskRepository {
     if (!canvasPath) throw new SchemaError(`No canvas path for id: ${canvasId}`, { code: "CANVAS_NOT_FOUND" });
     const stat = await this.vault.stat(canvasPath);
     if (!stat) throw new SchemaError(`Canvas not found: ${canvasPath}`, { code: "CANVAS_NOT_FOUND" });
-    const doc = JSON.parse(await this.vault.read(canvasPath));
+    let doc;
+    try { doc = JSON.parse(await this.vault.read(canvasPath)); }
+    catch (err) { throw new SchemaError(`Invalid canvas document: ${canvasPath}`, { code: "CANVAS_INVALID", cause: err }); }
+    if (!isCanvas(doc)) throw new SchemaError(`Invalid canvas document: ${canvasPath}`, { code: "CANVAS_INVALID" });
     const before = doc.nodes.length;
     doc.nodes = doc.nodes.filter((n) => n.id !== nodeId);
     doc.edges = (doc.edges || []).filter((e) => e.fromNode !== nodeId && e.toNode !== nodeId);
@@ -153,14 +161,11 @@ export class FileTaskRepository {
   // Delete the task everywhere: remove every placement, then the canonical file
   // (plan §13.3 "Delete everywhere" — the only entity-deleting path).
   async deleteTask(id) {
-    const { path } = this._sourceFor(id);
+    const { path, hash } = this._sourceFor(id);
     const placements = this.index.placementsForEntity(id);
-    for (const p of placements) {
-      try { await this.removePlacement(p.canvasId, p.nodeId); }
-      catch (_) { /* canvas already gone; file removal below is authoritative */ }
-    }
-    await this.vault.remove(path);
-    this.indexer.removeFile(path);
+    for (const p of placements) await this.removePlacement(p.canvasId, p.nodeId);
+    await this.vault.remove(path, { expectedHash: hash });
+    await this.indexer.removeFile(path);
     return { id, path, removedPlacements: placements.length };
   }
 }

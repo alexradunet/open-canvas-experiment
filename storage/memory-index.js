@@ -1,7 +1,7 @@
 // In-memory index — reference implementation of the LifeIndexer index port
-// (Phase 3). Mirrors the SQL-backed implementation in life-store.js and is used
-// by the Node test suite. transaction() snapshots and rolls back on error to
-// match SQLite atomicity, so a thrown failure cannot leave a partial projection.
+// (Phase 3). It is used by the Node test suite and the browser runtime.
+// transaction() snapshots and rolls back on error, so a thrown failure cannot
+// leave a partial projection.
 
 const SEP = "\u0000";
 
@@ -23,14 +23,14 @@ export class MemoryIndex {
     const snap = {
       source: new Map(this._source), tasks: new Map(this._tasks), habits: new Map(this._habits),
       journals: new Map(this._journals), events: new Map(this._events), habitEntries: new Map(this._habitEntries),
-      placements: new Map(this._placements), diagnostics: new Map(this._diagnostics), state: new Map(this._state),
+      placements: new Map(this._placements), diagnostics: new Map(this._diagnostics), state: new Map(this._state), diagId: this._diagId,
     };
     try {
       return fn();
     } catch (err) {
       this._source = snap.source; this._tasks = snap.tasks; this._habits = snap.habits;
       this._journals = snap.journals; this._events = snap.events; this._habitEntries = snap.habitEntries;
-      this._placements = snap.placements; this._diagnostics = snap.diagnostics; this._state = snap.state;
+      this._placements = snap.placements; this._diagnostics = snap.diagnostics; this._state = snap.state; this._diagId = snap.diagId;
       throw err;
     }
   }
@@ -83,6 +83,7 @@ export class MemoryIndex {
     }
   }
   clearDiagnostics(path) { for (const [k, v] of this._diagnostics) if (v.sourcePath === path) this._diagnostics.delete(k); }
+  clearAllDiagnostics() { this._diagnostics.clear(); }
   allDiagnostics() { return [...this._diagnostics.values()].map((d) => ({ ...d })); }
 
   // --- index_state -----------------------------------------------------------
@@ -90,9 +91,13 @@ export class MemoryIndex {
   getIndexState(key) { return this._state.has(key) ? this._state.get(key) : null; }
 
   // --- full reset (cold rebuild) --------------------------------------------
+  clearAllProjections() {
+    this._tasks.clear(); this._habits.clear(); this._journals.clear(); this._events.clear(); this._habitEntries.clear();
+  }
+
   clearAll() {
-    this._source.clear(); this._tasks.clear(); this._habits.clear(); this._journals.clear();
-    this._events.clear(); this._habitEntries.clear(); this._placements.clear();
+    this._source.clear(); this.clearAllProjections();
+    this._placements.clear();
     this._diagnostics.clear(); this._state.clear();
   }
 

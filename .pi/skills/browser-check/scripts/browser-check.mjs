@@ -243,13 +243,13 @@ async function smoke(url, flags) {
     const counts = await session.evaluate(`({ dom: document.querySelectorAll('.canvas-node').length, doc: window.orbitCanvas.getDocument().nodes.length })`);
     record("render: DOM cards match document nodes", counts.dom === counts.doc && counts.doc > 0, `${counts.dom}/${counts.doc}`);
 
-    // 3. SQLite life store came up (Wasm + kvvfs).
+    // 3. Canonical file index came up (in-memory index over the vault; no SQLite in canonical v1).
     try {
-      await session.waitFor(`!document.getElementById("lifeStoreStatus").textContent.includes("Preparing")`, 12000);
-      const status = await session.evaluate(`document.getElementById("lifeStoreStatus").textContent.trim()`);
-      record("sqlite: life store ready", /SQLite\s+\d/.test(status) && !/unavailable/i.test(status), status);
+      await session.waitFor(`!document.getElementById("lifeIndexStatus").textContent.includes("Preparing")`, 12000);
+      const status = await session.evaluate(`document.getElementById("lifeIndexStatus").textContent.trim()`);
+      record("index: canonical files indexed", /Files\b/.test(status) && /\d+ indexed/.test(status) && !/unavailable|read-only/i.test(status), status);
     } catch {
-      record("sqlite: life store ready", false, await session.evaluate(`document.getElementById("lifeStoreStatus").textContent.trim()`).catch(() => "unreadable"));
+      record("index: canonical files indexed", false, await session.evaluate(`document.getElementById("lifeIndexStatus").textContent.trim()`).catch(() => "unreadable"));
     }
 
     // 4. Clicking a card selects it and opens the inspector.

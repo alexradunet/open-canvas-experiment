@@ -1,12 +1,12 @@
 ---
 name: browser-check
-description: Verify the Balaur canvas app in headless Chrome over CDP — the default way to check this application after any change. Runs the AGENTS.md §13 baseline smoke suite (boot, render, SQLite, selection, card creation, persistence, offline), plus ad-hoc runtime probes and screenshots. Use whenever a change to app.js, styles/, storage/, sw.js, or index.html needs browser-level verification.
+description: Verify the Balaur canvas app in headless Chrome over CDP — the default way to check this application after any change. Runs the AGENTS.md §13 baseline smoke suite (boot, render, file index, selection, card creation, persistence, offline), plus ad-hoc runtime probes and screenshots. Use whenever a change to app.js, styles/, storage/, sw.js, or index.html needs browser-level verification.
 ---
 
 # Browser check (headless Chrome + CDP)
 
 This is the **default browser verification path** for this repository (AGENTS.md §13).
-`node --check` alone never proves persistence, Wasm, or canvas behavior — run this skill
+`node --check` alone never proves persistence, IndexedDB, or canvas behavior — run this skill
 whenever JavaScript, CSS, storage, or shell assets change.
 
 ## Prerequisites
@@ -36,7 +36,7 @@ node .pi/skills/browser-check/scripts/browser-check.mjs smoke --offline --screen
 
 # One-off runtime probe (prints JSON). The page is loaded and app boot is awaited.
 node .pi/skills/browser-check/scripts/browser-check.mjs eval "window.orbitCanvas.getSummary()"
-node .pi/skills/browser-check/scripts/browser-check.mjs eval "await window.orbitLifeReady && window.orbitLifeStore.stats()"
+node .pi/skills/browser-check/scripts/browser-check.mjs eval "await window.orbitVaultReady && window.orbitCanvas.getSummary()"
 node .pi/skills/browser-check/scripts/browser-check.mjs eval "document.title" --wait "window.orbitCanvas"
 
 # Screenshot (full page, or one element with --selector).
@@ -48,7 +48,7 @@ node .pi/skills/browser-check/scripts/browser-check.mjs shot /tmp/card.png --sel
 
 1. Boot with no uncaught console errors and no failed asset requests.
 2. Every document node renders as a card (DOM count == document count).
-3. Sidebar reports `SQLite <version> · local` (Wasm life store came up).
+3. Sidebar reports `Files · N indexed` (canonical file index came up over the vault; no SQLite in canonical v1).
 4. Clicking a card selects it, opens the inspector, and shows the selection
    frame (visible, solid border).
 5. Double-clicking **inside** a card creates nothing (regression guard).
@@ -77,8 +77,8 @@ node .pi/skills/browser-check/scripts/browser-check.mjs smoke --width 380 --heig
 ```
 
 **Deep probes** — useful runtime surfaces: `window.orbitCanvas.getDocument()`,
-`.getWorkspace()`, `.getSummary()`, `await window.orbitLifeReady`,
-`window.orbitLifeStore.stats()`, `window.orbitVaultStore`.
+`.getWorkspace()`, `.getSummary()`, `await window.orbitVaultReady`,
+`window.orbitVaultStore`.
 
 ## Caveats
 

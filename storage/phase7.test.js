@@ -54,6 +54,28 @@ test("updateHabit patches definition fields preservation-first", async () => {
   assert.equal(index.allHabits()[0].frequency, "daily");
 });
 
+test("updateHabit validates domain patches before writing", async () => {
+  const { repo, vault } = setup();
+  const { path } = await repo.createHabit({ id: "habit-walk", title: "Walk" });
+  const before = await vault.read(path);
+  await assert.rejects(() => repo.updateHabit("habit-walk", { frequency: "yearly" }), /Invalid habit frequency/);
+  assert.equal(await vault.read(path), before, "invalid habit frequency must not be written");
+});
+
+test("updateHabit body replacement preserves unknown frontmatter and CRLF", async () => {
+  const { repo, vault, indexer } = setup();
+  const { path } = await repo.createHabit({ id: "habit-crlf", title: "Walk" });
+  const original = await vault.read(path);
+  const external = original.replace(/\n/g, "\r\n").replace("---\r\n", "---\r\ncustom: keep\r\n");
+  await vault.write(path, external);
+  await indexer.indexFile(path, external, {});
+  await repo.updateHabit("habit-crlf", { body: "new\nbody" });
+  const updated = await vault.read(path);
+  assert.match(updated, /custom: keep\r\n/);
+  assert.match(updated, /new\r\nbody/);
+
+});
+
 test("updateHabit rejects unknown fields", async () => {
   const { repo } = setup();
   await repo.createHabit({ id: "habit-walk", title: "Walk" });
@@ -83,6 +105,20 @@ test("checkIn creates a per-day habit-log file and indexes the event", async () 
   assert.equal(entries[0].localDate, "2026-07-21");
   assert.equal(entries[0].status, "done");
   assert.equal(entries[0].value, 1);
+});
+
+test("checkIn preserves trailing bytes and CRLF when appending", async () => {
+  const { repo, vault, indexer } = setup();
+  await repo.createHabit({ id: "habit-walk", title: "Walk" });
+  const first = await repo.checkIn("habit-walk", { localDate: "2026-07-21" });
+  const original = await vault.read(first.logPath);
+  const external = original.replace(/\n/g, "\r\n").replace(/\r\n$/, "  \r\n");
+  await vault.write(first.logPath, external);
+  await indexer.indexFile(first.logPath, external, {});
+  const second = await repo.checkIn("habit-walk", { localDate: "2026-07-21", value: 2 });
+  const final = await vault.read(first.logPath);
+  assert.ok(final.startsWith(external), "existing bytes must remain untouched");
+  assert.match(final, new RegExp(`orbit:habit-entry id=${second.entryId}[^\\r\\n]*\\r\\n`));
 });
 
 test("checkIn appends to the same day's log, preserving history (not overwriting)", async () => {

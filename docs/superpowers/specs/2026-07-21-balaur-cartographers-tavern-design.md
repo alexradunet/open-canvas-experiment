@@ -1,3 +1,5 @@
+> Historical design document. Superseded by the canonical-files-only v1 architecture and current `docs/design-system.md`; retained for provenance only.
+
 # Balaur Cartographer’s Tavern rebrand — design specification
 
 **Date:** 2026-07-21  

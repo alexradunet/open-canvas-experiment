@@ -1,6 +1,6 @@
 # Balaur Cartographer's Tavern design system
 
-Balaur uses an application-local, standards-first CSS system. The interface is a cartographer's worktable: carved oak belongs to application furniture, parchment belongs to editable documents, candle gold marks the primary action, and teal marks focus. The design changes presentation only; JSON Canvas documents, SQLite records, browser-storage keys, and import compatibility remain independent.
+Balaur uses an application-local, standards-first CSS system. The interface is a cartographer's worktable: carved oak belongs to application furniture, parchment belongs to editable documents, candle gold marks the primary action, and teal marks focus. The design changes presentation only; JSON Canvas documents, canonical Markdown files, the disposable query index, browser-storage keys, and import compatibility remain independent.
 
 ## Sources and ownership
 

@@ -94,6 +94,14 @@ test("updateTask patches frontmatter preservation-first and bumps updated-at", a
   assert.match(await vault.read(path), /Keep me\./);
 });
 
+test("updateTask validates domain patches before writing", async () => {
+  const { repo, vault } = setup();
+  const { path } = await repo.createTask({ id: "task-a1b2c3", title: "Review" });
+  const before = await vault.read(path);
+  await assert.rejects(() => repo.updateTask("task-a1b2c3", { status: "bogus" }), /Invalid task status/);
+  assert.equal(await vault.read(path), before, "invalid task status must not be written");
+});
+
 test("updateTask preserves unknown frontmatter fields", async () => {
   const { repo, vault, indexer } = setup();
   const { path } = await repo.createTask({ id: "task-a1b2c3", title: "Review" });

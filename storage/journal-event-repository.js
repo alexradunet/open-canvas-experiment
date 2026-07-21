@@ -6,15 +6,13 @@
 // the LifeIndexer. Platform-neutral and asynchronous — tested against MemoryVault
 // + MemoryIndex (storage/phase8.test.js).
 
-import { serializeJournal, parseJournal, serializeCalendarEvent, parseCalendarEvent, CalendarEventCodec } from "./entity-codec.js";
-import { patchFields } from "./frontmatter.js";
+import { serializeJournal, parseJournal, serializeCalendarEvent, parseCalendarEvent, CalendarEventCodec, JournalCodec } from "./entity-codec.js";
+import { patchFields, replaceBody, isValidLocalDate, localDateForInstant } from "./frontmatter.js";
 import { entityPath } from "./vault-path.js";
 import { SchemaError } from "./vault-errors.js";
 
-const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
-
 function assertLocalDate(localDate) {
-  if (!DATE_RE.test(String(localDate))) throw new SchemaError(`Bad local date: ${localDate}`, { code: "BAD_LOCAL_DATE" });
+  if (!isValidLocalDate(String(localDate))) throw new SchemaError(`Bad local date: ${localDate}`, { code: "BAD_LOCAL_DATE" });
   return String(localDate);
 }
 
@@ -53,12 +51,14 @@ export class FileJournalRepository {
     const path = journalPath(localDate);
     const stat = await this.vault.stat(path);
     if (!stat) throw new SchemaError(`Journal not found: ${localDate}`, { code: "JOURNAL_NOT_FOUND" });
-    const existing = parseJournal(await this.vault.read(path));
-    const updated = { ...existing, body: body ?? existing.body, updatedAt: this.now() };
-    const content = serializeJournal(updated);
+    const existingText = await this.vault.read(path);
+    const existing = parseJournal(existingText);
+    const patched = patchFields(existingText, { "updated-at": this.now() }, JournalCodec.spec);
+    const content = replaceBody(patched, body ?? existing.body);
+    const parsed = parseJournal(content);
     await this.vault.write(path, content, { expectedHash: stat.hash });
     await this.indexer.indexFile(path, content, {});
-    return updated;
+    return parsed;
   }
 }
 
@@ -94,8 +94,8 @@ export class FileEventRepository {
       orbitId: id, title,
       startsAt: input.startsAt,
       endsAt: input.endsAt ?? null,
-      localDate: assertLocalDate(input.localDate || String(input.startsAt).slice(0, 10)),
       timezone: input.timezone || "UTC",
+      localDate: assertLocalDate(input.localDate || localDateForInstant(input.startsAt, input.timezone || "UTC")),
       allDay: input.allDay ?? false,
       source: input.source || "orbit",
       createdAt: ts, updatedAt: ts,
@@ -130,19 +130,17 @@ export class FileEventRepository {
       fmPatch[fmKey] = value;
     }
     let next = patchFields(content, fmPatch, CalendarEventCodec.spec);
-    if ("body" in patch) {
-      const parsed = parseCalendarEvent(content);
-      next = serializeCalendarEvent({ ...parsed, ...patch, orbitId: id, updatedAt: this.now() });
-    }
+    if ("body" in patch) next = replaceBody(next, patch.body);
+    const parsed = parseCalendarEvent(next);
     await this.vault.write(path, next, { expectedHash: hash });
     await this.indexer.indexFile(path, next, {});
-    return parseCalendarEvent(next);
+    return parsed;
   }
 
   async deleteEvent(id) {
-    const { path } = this._sourceFor(id);
-    await this.vault.remove(path);
-    this.indexer.removeFile(path);
+    const { path, hash } = this._sourceFor(id);
+    await this.vault.remove(path, { expectedHash: hash });
+    await this.indexer.removeFile(path);
     return { id, path };
   }
 }

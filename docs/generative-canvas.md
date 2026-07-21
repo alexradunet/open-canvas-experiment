@@ -1,6 +1,12 @@
 # Generative canvas and live cards
 
-This is the proposed bridge between JSON Canvas, live HTML/WebGL cards, and the ideas in Phil Holden's MIT-licensed [`partialupdate`](https://github.com/philholden/partialupdate) experiment.
+Balaur's shipped security boundary connects standard JSON Canvas file nodes, sandboxed HTML/WebGL cards, and structured AI operations. The addressable-region ideas in Phil Holden's MIT-licensed [`partialupdate`](https://github.com/philholden/partialupdate) experiment are reference material, not a permission to execute generated host-page code.
+
+## Canonical life data and AI context
+
+AI changes to life entities use the file repositories. A task, habit, journal entry, or calendar event is a canonical Markdown file; the in-memory index is only a disposable query projection. AI operations must not write projection rows or invent task-marker nodes. A task placement is a standard JSON Canvas `file` node, and removing a placement does not remove the canonical entity.
+
+When an incoming AI context edge targets a canonical entity `file` node, Balaur preloads the referenced Markdown file and supplies its parsed title/body rather than treating the path as the content. Missing or unreadable files produce a diagnostic and a bounded fallback; they are never silently treated as the file body.
 
 ## Keep the host document standard
 
@@ -83,12 +89,14 @@ This representation remains readable in other JSON Canvas clients: they see ordi
 
 ## AI request flow
 
-1. The app derives a compact context: visible nodes, selected nodes, nearby relationships, open tasks, and available widget regions.
+1. The app derives a compact context: visible nodes, selected nodes, nearby relationships, canonical file bodies, open tasks, and available widget regions.
 2. The model returns a typed plan, not executable host-page code.
 3. The app validates the plan and shows a human-readable preview.
 4. The user approves changes.
-5. A single transaction applies the plan and records an inverse transaction for undo.
+5. Canvas changes apply through validated operations; life changes call the canonical file repositories, which reindex after writing.
 6. Widget-region changes are sent to the relevant sandbox through `postMessage`.
+
+The operation and repository wiring is present in the static application. Browser verification of file-node context resolution, AI-assisted task flows, and failure handling remains pending.
 
 The model should receive only the relevant canvas slice by default, not every attachment in a workspace.
 

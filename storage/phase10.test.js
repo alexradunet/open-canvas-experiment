@@ -71,6 +71,19 @@ test("auditIndex detects a hash mismatch from an unreindexed external edit", asy
   assert.ok(audit.problems.some((p) => p.code === "HASH_MISMATCH" && p.path === path));
 });
 
+test("auditIndex maps JD canvas paths through the injected resolver", async () => {
+  const { vault } = setup();
+  const index = new MemoryIndex();
+  const resolver = () => "canvas-jd-category";
+  const indexer = new LifeIndexer({ vault, index, canvasIdFromPath: resolver });
+  await vault.write("tasks/jd.md", taskContent("task-jd", "JD task"));
+  await vault.write("canvases/11-finance.canvas", JSON.stringify({ nodes: [{ id: "placement-1", type: "file", file: "tasks/jd.md", x: 0, y: 0, width: 100, height: 80 }], edges: [] }));
+  await indexer.rebuild();
+  const audit = await auditIndex(vault, index, { canvasIdFromPath: resolver });
+  assert.equal(audit.ok, true);
+  assert.deepEqual(index.allPlacements().map(({ canvasId, nodeId }) => ({ canvasId, nodeId })), [{ canvasId: "canvas-jd-category", nodeId: "placement-1" }]);
+});
+
 test("auditIndex detects a duplicate orbit-id across files", async () => {
   const { vault, index, indexer } = setup();
   const dup = taskContent("task-dup", "A");

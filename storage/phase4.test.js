@@ -90,6 +90,18 @@ test("parseSidecar round-trips and rejects malformed sidecars", () => {
   assert.equal(parseSidecar(JSON.stringify(noActive)).activeId, "canvas-root");
 });
 
+test("load derives a missing jdKind from the Johnny Decimal entry", async () => {
+  const vault = new MemoryVault();
+  const source = legacyWorkspace();
+  await new WorkspaceStore(vault).migrate(source);
+  const sidecar = JSON.parse(await vault.read(SIDECAR_PATH));
+  delete sidecar.canvases["canvas-planning"].jdKind;
+  sidecar.johnnyDecimal.entries["11"] = { code: "11", kind: "category" };
+  await vault.write(SIDECAR_PATH, JSON.stringify(sidecar));
+  const result = await new WorkspaceStore(vault).load();
+  assert.equal(result.workspace.canvases["canvas-planning"].jdKind, "category");
+});
+
 test("migrate then load reconstructs an equivalent workspace", async () => {
   const vault = new MemoryVault();
   const store = new WorkspaceStore(vault);
@@ -173,7 +185,7 @@ test("an external edit triggers a write conflict and leaves the sidecar untouche
   assert.equal((await vault.stat(SIDECAR_PATH)).hash, sidecarBefore);
 });
 
-test("a missing canvas file loads as an empty document with a diagnostic, hierarchy intact", async () => {
+test("a missing canvas file loads as a read-only repair placeholder with hierarchy intact", async () => {
   const vault = new MemoryVault();
   const store = new WorkspaceStore(vault);
   await store.migrate(legacyWorkspace());
@@ -182,11 +194,13 @@ test("a missing canvas file loads as an empty document with a diagnostic, hierar
   const result = await new WorkspaceStore(vault).load();
   assert.equal(result.workspace.canvases["canvas-planning"].parentId, "canvas-root");
   assert.deepEqual(result.workspace.canvases["canvas-planning"].document, { nodes: [], edges: [] });
+  assert.equal(result.workspace.canvases["canvas-planning"].readOnly, true);
+  assert.equal(result.workspace.canvases["canvas-planning"].repairRequired, true);
   assert.ok(isCanvas(result.workspace.canvases["canvas-root"].document));
   assert.deepEqual(result.diagnostics, [{ path: "canvases/planning.canvas", code: "CANVAS_MISSING", message: "Missing canvas file: canvases/planning.canvas" }]);
 });
 
-test("an invalid canvas file loads with a CANVAS_INVALID diagnostic", async () => {
+test("an invalid canvas file preserves raw bytes and remains read-only", async () => {
   const vault = new MemoryVault();
   const store = new WorkspaceStore(vault);
   await store.migrate(legacyWorkspace());
@@ -194,7 +208,25 @@ test("an invalid canvas file loads with a CANVAS_INVALID diagnostic", async () =
 
   const result = await new WorkspaceStore(vault).load();
   assert.deepEqual(result.workspace.canvases["canvas-planning"].document, { nodes: [], edges: [] });
+  assert.equal(result.workspace.canvases["canvas-planning"].readOnly, true);
+  assert.equal(result.workspace.canvases["canvas-planning"].rawContent, JSON.stringify({ nodes: [{ bad: true }] }));
+  const before = await vault.read("canvases/planning.canvas");
+  const safeStore = new WorkspaceStore(vault);
+  await safeStore.load();
+  await safeStore.save(result.workspace);
+  assert.equal(await vault.read("canvases/planning.canvas"), before);
   assert.equal(result.diagnostics[0].code, "CANVAS_INVALID");
+});
+
+test("save rejects an unsafe sidecar before writing any canvas", async () => {
+  const vault = new MemoryVault();
+  const store = new WorkspaceStore(vault);
+  await store.migrate(legacyWorkspace());
+  const before = await vault.snapshot();
+  const unsafe = (await store.load()).workspace;
+  unsafe.canvases["canvas-planning"].path = "tasks/overwritten.md";
+  await assert.rejects(() => store.save(unsafe), SchemaError);
+  assert.deepEqual(await vault.snapshot(), before, "unsafe metadata must cause no writes");
 });
 
 test("removing a canvas from the workspace deletes its orphaned file on save", async () => {
@@ -210,6 +242,19 @@ test("removing a canvas from the workspace deletes its orphaned file on save", a
   assert.deepEqual(result.orphans, ["canvases/planning.canvas"]);
   assert.equal(await vault.exists("canvases/planning.canvas"), false);
   assert.equal(await vault.exists(ROOT_CANVAS_PATH), true);
+});
+
+test("save preserves unknown canvas files and uses CAS for owned orphans", async () => {
+  const vault = new MemoryVault();
+  const store = new WorkspaceStore(vault);
+  await store.migrate(legacyWorkspace());
+  await vault.write("canvases/recovery.canvas", canvasToJSON(doc(textNode("r", "# Recovery"))));
+  const ws = (await store.load()).workspace;
+  delete ws.canvases["canvas-planning"];
+  await vault.write("canvases/planning.canvas", canvasToJSON(doc(textNode("external", "# External"))));
+  await assert.rejects(() => store.save(ws), ConflictError);
+  assert.equal(await vault.exists("canvases/recovery.canvas"), true);
+  assert.equal(await vault.exists("canvases/planning.canvas"), true);
 });
 
 test("migrate refuses to overwrite an existing vault (fresh precondition)", async () => {
@@ -247,6 +292,11 @@ test("extracted isCanvas validator agrees on valid and invalid documents", () =>
   assert.ok(isCanvas({ nodes: [], edges: [] }));
   assert.equal(isCanvas({ nodes: [{ id: "x", type: "bogus", x: 0, y: 0, width: 1, height: 1 }], edges: [] }), false);
   assert.equal(isCanvas(null), false);
+  assert.equal(isCanvas({}), false);
+  assert.equal(isCanvas({ nodes: [], edges: [], extra: true }), false);
+  assert.equal(isCanvas({ nodes: [{ id: "fraction", type: "text", x: 0.5, y: 0, width: 1, height: 1, text: "x" }], edges: [] }), false);
+  assert.equal(isCanvas({ nodes: [{ id: "subpath", type: "file", x: 0, y: 0, width: 1, height: 1, file: "notes/a.md", subpath: "heading" }], edges: [] }), false);
+  assert.equal(isCanvas({ nodes: [{ id: "zoom", type: "group", x: 0, y: 0, width: 1, height: 1, backgroundZoom: 1 }], edges: [] }), false);
 });
 
 test("sidecarToJSON and canvasToJSON are stable, pretty-printed text", () => {

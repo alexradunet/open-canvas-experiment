@@ -5,7 +5,7 @@
 // application objects. Parsing validates required fields, enums, dates, and the
 // orbit-schema version; unknown frontmatter is preserved by the codec layer.
 
-import { splitFrontmatter, collectKnownFields, serializeFrontmatter } from "./frontmatter.js";
+import { splitFrontmatter, collectKnownFields, serializeFrontmatter, isValidInstant, isValidIanaTimezone } from "./frontmatter.js";
 import { ParseError, SchemaError } from "./vault-errors.js";
 
 export const SUPPORTED_SCHEMA = 1;
@@ -17,6 +17,30 @@ function validateSchema(schema) {
   if (typeof schema !== "number" || !Number.isFinite(schema)) throw new SchemaError("Invalid orbit-schema", { code: "SCHEMA_INVALID" });
   if (schema > SUPPORTED_SCHEMA) throw new SchemaError(`Unsupported orbit-schema ${schema} (read-only)`, { code: "SCHEMA_NEWER" });
   if (schema !== SUPPORTED_SCHEMA) throw new SchemaError(`Unsupported orbit-schema ${schema}`, { code: "SCHEMA_UNSUPPORTED" });
+}
+
+const TASK_STATUSES = new Set(["inbox", "next", "scheduled", "waiting", "done", "cancelled"]);
+const HABIT_FREQUENCIES = new Set(["daily", "weekly", "monthly"]);
+const HABIT_ENTRY_STATUSES = new Set(["done", "skipped", "missed"]);
+
+function validateDomain(type, out) {
+  if (type === "task" && !TASK_STATUSES.has(out.status)) {
+    throw new SchemaError(`Invalid task status: ${out.status}`, { code: "TASK_BAD_STATUS" });
+  }
+  if (type === "habit") {
+    if (!HABIT_FREQUENCIES.has(out.frequency)) throw new SchemaError(`Invalid habit frequency: ${out.frequency}`, { code: "HABIT_BAD_FREQUENCY" });
+    if (out.weekdays !== null && (!Array.isArray(out.weekdays) || out.weekdays.some((d) => !Number.isInteger(d) || d < 1 || d > 7) || new Set(out.weekdays).size !== out.weekdays.length)) {
+      throw new SchemaError("Habit weekdays must be unique integers from 1 through 7", { code: "HABIT_BAD_WEEKDAY" });
+    }
+  }
+  if (type === "calendar-event" && !isValidIanaTimezone(out.timezone)) {
+    throw new SchemaError(`Invalid IANA timezone: ${out.timezone}`, { code: "EVENT_BAD_TIMEZONE" });
+  }
+}
+
+function validateEntityValues(type, entity) {
+  validateDomain(type, entity);
+  return entity;
 }
 
 function makeCodec({ type, fields, order, required }) {
@@ -37,6 +61,7 @@ function makeCodec({ type, fields, order, required }) {
       }
       fmFields[key] = value;
     }
+    validateEntityValues(type, Object.fromEntries(order.filter((key) => !["orbit-schema", "orbit-type"].includes(key)).map((key) => [kebabToCamel(key), fmFields[key]])));
     const fm = serializeFrontmatter(fmFields, spec, order);
     const body = entity.body ?? "";
     return fm + (body ? "\n" + body : "");
@@ -62,8 +87,9 @@ function makeCodec({ type, fields, order, required }) {
       out[kebabToCamel(key)] = raw[key] === undefined ? null : raw[key];
     }
     let body = fm.lines.slice(fm.closeIdx + 1).join("");
-    if (body.startsWith("\n")) body = body.slice(1); // drop the single blank separator line
+    if (body.startsWith(fm.term)) body = body.slice(fm.term.length); // drop one separator without changing CRLF fidelity
     out.body = body;
+    validateEntityValues(type, out);
     return out;
   }
 
@@ -161,24 +187,38 @@ export function parseEntity(text) {
 // --- habit-log check-in event markers (plan §9.4) ----------------------------
 // Constrained token grammar; no arbitrary user text inside the marker.
 
-const HABIT_ENTRY_RE = /<!--\s*orbit:habit-entry\s+([^>]*?)\s*-->/g;
+const HABIT_ENTRY_START_RE = /<!--\s*orbit:habit-entry\b/gi;
 const ENTRY_TOKEN_RE = /^[a-z0-9][a-z0-9.:+-]*$/i;
 
 export function parseHabitEntries(body) {
+  const source = String(body);
   const entries = [];
-  for (const m of String(body).matchAll(HABIT_ENTRY_RE)) {
+  // Inspect every marker start rather than merely checking whether one complete
+  // marker exists. A valid marker followed by an unterminated marker invalidates
+  // the complete source file.
+  for (const start of source.matchAll(HABIT_ENTRY_START_RE)) {
+    const end = source.indexOf("-->", start.index);
+    if (end < 0) throw new ParseError("Unterminated habit-entry marker", { code: "HABIT_ENTRY_INVALID" });
+    const marker = source.slice(start.index, end + 3);
+    const m = /^<!--\s*orbit:habit-entry\s+([^>]*?)\s*-->$/i.exec(marker);
+    if (!m) throw new ParseError("Malformed habit-entry marker", { code: "HABIT_ENTRY_INVALID" });
     const attrs = Object.create(null);
-    for (const tok of m[1].trim().split(/\s+/)) {
+    const tokens = m[1].trim() ? m[1].trim().split(/\s+/) : [];
+    for (const tok of tokens) {
       const eq = tok.indexOf("=");
-      if (eq > 0) attrs[tok.slice(0, eq)] = tok.slice(eq + 1);
+      if (eq <= 0 || eq === tok.length - 1) throw new ParseError(`Malformed habit-entry attribute: ${tok}`, { code: "HABIT_ENTRY_INVALID" });
+      const key = tok.slice(0, eq);
+      if (!(key in { id: 1, habit: 1, status: 1, value: 1, at: 1 })) throw new ParseError(`Unknown habit-entry attribute: ${key}`, { code: "HABIT_ENTRY_INVALID" });
+      if (Object.hasOwn(attrs, key)) throw new ParseError(`Duplicate habit-entry attribute: ${key}`, { code: "HABIT_ENTRY_INVALID" });
+      attrs[key] = tok.slice(eq + 1);
     }
-    entries.push({
-      id: attrs.id ?? null,
-      habit: attrs.habit ?? null,
-      status: attrs.status ?? null,
-      value: attrs.value === undefined ? null : Number(attrs.value),
-      at: attrs.at ?? null,
-    });
+    for (const key of ["id", "habit", "status", "value", "at"]) if (!(key in attrs)) throw new ParseError(`Missing habit-entry attribute: ${key}`, { code: "HABIT_ENTRY_INVALID" });
+    if (!ENTRY_TOKEN_RE.test(attrs.id) || !ENTRY_TOKEN_RE.test(attrs.habit) || !HABIT_ENTRY_STATUSES.has(attrs.status) || !isValidInstant(attrs.at)) {
+      throw new ParseError("Invalid habit-entry marker", { code: "HABIT_ENTRY_INVALID" });
+    }
+    const value = Number(attrs.value);
+    if (!Number.isFinite(value)) throw new ParseError(`Bad habit-entry value: ${attrs.value}`, { code: "HABIT_ENTRY_INVALID" });
+    entries.push({ id: attrs.id, habit: attrs.habit, status: attrs.status, value, at: attrs.at });
   }
   return entries;
 }
@@ -188,6 +228,8 @@ export function serializeHabitEntry(entry) {
     if (!ENTRY_TOKEN_RE.test(String(v))) throw new ParseError(`Bad habit-entry ${label}: ${v}`, { code: "FM_BAD_ENUM" });
     return v;
   };
+  if (!HABIT_ENTRY_STATUSES.has(String(entry.status))) throw new ParseError(`Bad habit-entry status: ${entry.status}`, { code: "HABIT_ENTRY_INVALID" });
+  if (!isValidInstant(entry.at)) throw new ParseError(`Bad habit-entry instant: ${entry.at}`, { code: "HABIT_ENTRY_INVALID" });
   const value = Number(entry.value);
   if (!Number.isFinite(value)) throw new ParseError(`Bad habit-entry value: ${entry.value}`, { code: "FM_BAD_NUMBER" });
   return `<!-- orbit:habit-entry id=${token("id", entry.id)} habit=${token("habit", entry.habit)} status=${token("status", entry.status)} value=${value} at=${token("at", entry.at)} -->`;

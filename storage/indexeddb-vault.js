@@ -224,6 +224,16 @@ export class IndexedDbVault extends VaultStore {
   }
 
   async restore(snapshot) {
+    const prepared = [];
+    const foldsSeen = new Map();
+    for (const file of snapshot?.files || []) {
+      const p = assertSafePath(file.path);
+      const fold = caseFoldKey(p);
+      if (foldsSeen.has(fold)) throw new PathError(`Case-fold collision: "${p}" vs "${foldsSeen.get(fold)}"`, { code: "PATH_CASE_COLLISION" });
+      foldsSeen.set(fold, p);
+      const text = String(file.text);
+      prepared.push({ p, text, hash: await contentHash(text), fold, mediaType: file.mediaType || mediaTypeFor(p) });
+    }
     const db = await this._open();
     const tx = db.transaction(["files", "changes", "folds"], "readwrite");
     const files = tx.objectStore("files");
@@ -234,13 +244,10 @@ export class IndexedDbVault extends VaultStore {
     folds.clear();
     let count = 0;
     let revision = 0;
-    for (const file of snapshot?.files || []) {
-      const p = assertSafePath(file.path);
-      const text = String(file.text);
-      const hash = await contentHash(text);
-      folds.put({ fold: caseFoldKey(p), path: p });
-      revision = await reqP(changes.add({ path: p, operation: "create", hash }));
-      files.put({ path: p, mediaType: file.mediaType || mediaTypeFor(p), content: text, size: byteLength(text), hash, modifiedAt: new Date().toISOString(), revision });
+    for (const file of prepared) {
+      folds.put({ fold: file.fold, path: file.p });
+      revision = await reqP(changes.add({ path: file.p, operation: "create", hash: file.hash }));
+      files.put({ path: file.p, mediaType: file.mediaType, content: file.text, size: byteLength(file.text), hash: file.hash, modifiedAt: new Date().toISOString(), revision });
       count++;
     }
     await txDone(tx);

@@ -9,7 +9,7 @@
 // MemoryVault + MemoryIndex (storage/phase7.test.js).
 
 import { serializeHabit, parseHabit, HabitCodec, serializeHabitLog, serializeHabitEntry } from "./entity-codec.js";
-import { patchFields } from "./frontmatter.js";
+import { patchFields, replaceBody, localDateForInstant, isValidLocalDate } from "./frontmatter.js";
 import { entityPath } from "./vault-path.js";
 import { SchemaError } from "./vault-errors.js";
 
@@ -26,7 +26,7 @@ function randomToken() {
 
 // Logical path for a day's habit-log file (plan §6 layout).
 export function habitLogPath(localDate) {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(localDate))) throw new SchemaError(`Bad local date: ${localDate}`, { code: "BAD_LOCAL_DATE" });
+  if (!isValidLocalDate(String(localDate))) throw new SchemaError(`Bad local date: ${localDate}`, { code: "BAD_LOCAL_DATE" });
   return `habit-logs/${String(localDate).slice(0, 4)}/${localDate}.md`;
 }
 
@@ -86,13 +86,13 @@ export class FileHabitRepository {
       fmPatch[fmKey] = value;
     }
     let next = patchFields(content, fmPatch, HabitCodec.spec);
-    if ("body" in patch) {
-      const parsed = parseHabit(content);
-      next = serializeHabit({ ...parsed, ...patch, orbitId: id, updatedAt: this.now() });
-    }
+    if ("body" in patch) next = replaceBody(next, patch.body);
+    // Validate the patched definition before writing: patchFields does not
+    // enforce the habit frequency/weekday domain.
+    const parsed = parseHabit(next);
     await this.vault.write(path, next, { expectedHash: hash });
     await this.indexer.indexFile(path, next, {});
-    return parseHabit(next);
+    return parsed;
   }
 
   async archiveHabit(id) { return this.updateHabit(id, { archivedAt: this.now() }); }
@@ -101,7 +101,7 @@ export class FileHabitRepository {
   // The marker grammar is constrained: no arbitrary user text (plan §9.4).
   async checkIn(habitId, opts = {}) {
     this._sourceFor(habitId); // habit must exist
-    const localDate = opts.localDate || this.now().slice(0, 10);
+    const localDate = opts.localDate || localDateForInstant(opts.at || this.now(), opts.timezone || "UTC");
     const status = opts.status || "done";
     const value = Number(opts.value ?? 1);
     const at = opts.at || this.now();
@@ -112,8 +112,11 @@ export class FileHabitRepository {
     const stat = await this.vault.stat(logPath);
     let content;
     if (stat) {
-      const existing = (await this.vault.read(logPath)).replace(/\s+$/, "");
-      content = `${existing}\n${marker}\n`;
+      const existing = await this.vault.read(logPath);
+      const eol = existing.includes("\r\n") ? "\r\n" : "\n";
+      // Preserve every existing byte, including trailing spaces and the file's
+      // line-ending convention. Add only the separator required by the file.
+      content = existing.endsWith(eol) ? `${existing}${marker}${eol}` : `${existing}${eol}${marker}${eol}`;
       await this.vault.write(logPath, content, { expectedHash: stat.hash });
     } else {
       content = serializeHabitLog({ localDate, body: `${marker}\n` });

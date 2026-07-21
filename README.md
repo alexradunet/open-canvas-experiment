@@ -13,7 +13,7 @@ A small, standalone proof of concept for a local-first life-management app whose
 - Johnny Decimal areas, categories, and items with automatic IDs, validation, numeric sorting, and direct lookup
 - Draggable and resizable text, link, file, group, and sub-canvas portal nodes
 - Goals, projects, habits, ideas, and notes represented with standard JSON Canvas fields
-- Portable task cards backed by SQLite status, scheduling, due dates, and priority
+- Portable task cards backed by canonical Markdown files for status, scheduling, due dates, and priority
 - A Today dashboard for planned, overdue, inbox/next, and completed work
 - Obsidian-style side handles for dragging connections directly between cards, plus connect mode
 - Markdown cards and task checkboxes
@@ -23,10 +23,10 @@ A small, standalone proof of concept for a local-first life-management app whose
 - Prompt-first AI notes that generate Markdown directly onto the canvas
 - Reactive AI operator cards: connected nodes become inputs and generated notes refresh when inputs change
 - Library filters
-- Browser-local persistence with an actual SQLite Wasm life database
-- JSON Canvas `.canvas` import/export and whole-space `.balaur.json` backup/restore, including normalized SQLite data
+- Browser-local canonical-file persistence through an IndexedDB vault, with an in-memory query index rebuilt at boot
+- JSON Canvas `.canvas` import/export and whole-space version-2 `.orbit.json` file-bundle backup/restore
 - Installable offline shell with a web app manifest and Service Worker
-- No package install, CDN, or build step; SQLite Wasm is vendored locally
+- No package install, CDN, build step, or runtime database dependency
 - An application-local Balaur token and motion system with self-hosted fonts
 
 ## Run locally
@@ -60,7 +60,7 @@ Then open <http://localhost:4173>. Set `PORT` or `HOST` to override the defaults
 
 ## Johnny Decimal spaces
 
-A new browser profile opens with a pre-seeded fictional life index for **Alex, a 30-year-old man**. Existing spaces can load it from **JD → Load starter** after exporting a backup; loading the starter replaces the current local workspace.
+A new browser profile opens with a pre-seeded fictional life index for **Alex, a 30-year-old man**. Existing spaces can load it from **JD → Load starter** after exporting a backup; loading the starter replaces the canonical vault and reseeds the same task cards used on first run.
 
 Select **JD** beside the Canvases heading. Balaur determines the next valid level from the selected parent:
 
@@ -78,24 +78,32 @@ Area, category, and canvas-item portals remain standard JSON Canvas file nodes. 
 
 ## Tasks and Today
 
-A task is both a portable text node and a SQLite record:
+A task is a canonical Markdown file placed on one or more canvases through standard JSON Canvas `file` nodes:
 
 ```md
-<!-- orbit:task task-id -->
-# Review monthly budget
+---
+orbit-schema: 1
+orbit-type: task
+orbit-id: "task-a1b2c3"
+title: "Review monthly budget"
+status: next
+scheduled-on: "2026-07-22"
+due-on: "2026-07-25"
+---
+Task context remains ordinary Markdown.
 ```
 
-The canvas preserves its readable title, notes, geometry, and relationships. SQLite stores workflow status, priority, planned date, due date, estimate, recurrence data, and completion time. Deleting a task card removes its database record; imported markers are reconciled automatically.
+The Markdown file owns workflow status, priority, planned date, due date, estimate, recurrence, and completion time. A canvas node ID is only a placement; removing one placement does not remove the task. The runtime index is rebuilt from canonical files and is never the source of truth.
 
-Use the task inspector to edit metadata, or switch to **Today** for four projections of the same records: planned today, overdue, inbox/next, and completed today. Quick capture schedules a task for the current date while the full task dialog can place it in any nested canvas.
+Use the task inspector to edit metadata, or switch to **Today** for planned today, overdue, inbox/next, and completed work. Quick capture schedules a task for the current date while the full task dialog can place it in any nested canvas.
 
-## Local SQLite life database
+## Canonical files and queries
 
-Balaur combines JSON Canvas documents with a queryable SQLite database. Canvas files own visible notes, geometry, links, and Johnny Decimal structure; SQLite owns task workflow, habit history, journal indexes, calendar events, and activity records.
+Balaur stores `.canvas` documents, `.md` life entities, and the `.orbit/workspace.json` sidecar in an IndexedDB vault in the browser. At boot, `LifeIndexer` projects those files into a disposable in-memory index and `LifeQuery` serves Today, calendar, habits, journals, and task filtering. Deleting or rebuilding the index loses no user data. Upgrading a legacy localStorage profile is a clean break: its old task workflow state is not migrated.
 
-The static prototype runs official SQLite Wasm `3.53.0` against SQLite's `:localStorage:` kvvfs backend. The sidebar reports the database status. This is intentionally a starter backend: it works on GitHub Pages but is synchronous and subject to localStorage quota. The planned production adapter uses OPFS in a Worker, while Tauri can use native SQLite with the same schema.
+A persistent index is a deferred optimization, not a v1 dependency. OPFS-backed SQLite Wasm requires COOP/COEP headers that GitHub Pages cannot provide, so the static app uses the pure-JavaScript in-memory projection. Whole-space version-2 export/import preserves the sidecar and raw logical vault files rather than a database snapshot.
 
-Whole-space export serializes the database as normalized JSON alongside every canvas, and Import restores both layers. See [`docs/life-data.md`](docs/life-data.md) for the schema, runtime API, backup format, and OPFS migration path. See [`docs/offline.md`](docs/offline.md) for application-shell caching, update behavior, and offline validation.
+The vault-first wiring is implemented but browser-pending verification covers IndexedDB persistence, vault-first reload, task create/complete/Today UI behavior, export/import round-trip, offline reload, and timezone boundaries. See [`docs/life-data.md`](docs/life-data.md) for file contracts and repositories, [`docs/architecture.md`](docs/architecture.md) for ownership, and [`docs/offline.md`](docs/offline.md) for shell caching and validation.
 
 ## Connect an AI provider
 
@@ -128,7 +136,7 @@ By default, the key lives in `sessionStorage` for the current tab. Enabling **Re
 
 Each canvas remains a JSON Canvas 1.0 document with only the top-level `nodes` and `edges` arrays. A sub-canvas portal is a standard file node pointing to a child document under `canvases/`; Johnny Decimal portals use readable paths such as `canvases/11-finance.canvas`. Balaur's browser-local workspace sidecar tracks hierarchy, titles, Johnny Decimal identifiers, and camera positions without adding private fields to canvas objects.
 
-**Export .canvas** exports the currently open level. **Export whole space** produces a `.balaur.json` backup containing the sidecar and every standards-compliant canvas document; the normal Import action restores either format. The internal `orbit-workspace` format discriminator remains unchanged so existing backups stay importable.
+**Export .canvas** exports the currently open level. **Export whole space** produces a version-2 `.orbit.json` file bundle containing the sidecar, every standards-compliant canvas document, and canonical Markdown/attachment files; the normal Import action restores either format. Version-1 bundles are intentionally rejected in canonical-files-only v1.
 
 Life-management meaning is encoded portably:
 
@@ -146,11 +154,11 @@ This project is intentionally built with browser standards and no UI framework o
 - ES modules, Custom Elements, DOM templates, CSS custom properties, Pointer Events, SVG, Canvas, and direct WebGL
 - a command-based canvas engine for selection, geometry, JSON Canvas updates, undo, and sync
 - a versioned Service Worker application shell, IndexedDB/OPFS, and the File System Access API in the browser
-- **Tauri 2** for a small desktop app with filesystem and SQLite access
+- **Tauri 2** for a small desktop app with filesystem access and an adapter-compatible future persistent index, if needed
 - **Capacitor** as an optional mobile shell around the same web application
-- `.canvas` files as the portable format while indexed task/calendar projections remain app metadata
+- `.canvas` and Markdown files as the portable formats while the in-memory task/calendar projections remain disposable runtime state
 
-See [`docs/architecture.md`](docs/architecture.md) for the standards-first application design, [`docs/life-data.md`](docs/life-data.md) for JSON Canvas + SQLite storage, [`docs/offline.md`](docs/offline.md) for offline-first behavior, [`docs/design-system.md`](docs/design-system.md) for the Balaur material and motion system, and [`docs/generative-canvas.md`](docs/generative-canvas.md) for the live-card, partial-update, AI-operation, and security model.
+See [`docs/architecture.md`](docs/architecture.md) for the standards-first application design, [`docs/life-data.md`](docs/life-data.md) for canonical files and the runtime index, [`docs/offline.md`](docs/offline.md) for offline-first behavior, [`docs/design-system.md`](docs/design-system.md) for the Balaur material and motion system, and [`docs/generative-canvas.md`](docs/generative-canvas.md) for the live-card, partial-update, AI-operation, and security model.
 
 ## License
 

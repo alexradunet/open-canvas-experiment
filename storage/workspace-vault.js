@@ -8,10 +8,10 @@
 // logical path and is validated on read and write. This module is platform-neutral
 // and asynchronous so it runs against MemoryVault (tests) and IndexedDbVault
 // (browser). It is the tested foundation the Phase 4b app.js startup refactor
-// builds on; the running app still uses the legacy localStorage path until then.
+// builds on; localStorage is consulted only once as a legacy-profile migration source.
 
 import { isCanvas } from "./canvas-validate.js";
-import { assertSafePath } from "./vault-path.js";
+import { assertSafePath, caseFoldKey } from "./vault-path.js";
 import { SchemaError, ParseError } from "./vault-errors.js";
 
 export const SIDECAR_PATH = ".orbit/workspace.json";
@@ -49,7 +49,8 @@ export function toSidecar(workspace) {
     };
     if (record.jdCode) entry.jdCode = record.jdCode;
     if (record.jdTitle) entry.jdTitle = record.jdTitle;
-    if (record.jdKind) entry.jdKind = record.jdKind;
+    const jdKind = record.jdKind || workspace.johnnyDecimal?.entries?.[record.jdCode]?.kind;
+    if (jdKind) entry.jdKind = jdKind;
     canvases[record.id] = entry;
   }
   return {
@@ -84,11 +85,32 @@ export function parseSidecar(text) {
   const canvases = data.canvases;
   if (!canvases || typeof canvases !== "object" || Array.isArray(canvases)) throw new SchemaError("Sidecar missing canvases", { code: "SIDECAR_SCHEMA" });
   if (!canvases[data.rootId]) throw new SchemaError("Sidecar rootId has no canvas record", { code: "SIDECAR_SCHEMA" });
-  for (const record of Object.values(canvases)) {
-    if (!record || typeof record.id !== "string" || typeof record.title !== "string" || typeof record.path !== "string") {
-      throw new SchemaError("Sidecar canvas record is malformed", { code: "SIDECAR_SCHEMA" });
+  const folds = new Map();
+  for (const [key, record] of Object.entries(canvases)) {
+    if (!record || typeof record.id !== "string" || !record.id || key !== record.id || typeof record.title !== "string" || typeof record.path !== "string") {
+      throw new SchemaError("Sidecar canvas record is malformed or key/id mismatch", { code: "SIDECAR_SCHEMA" });
     }
-    assertSafePath(record.path); // throws PathError on an unsafe stored path
+    const path = assertSafePath(record.path);
+    if (!/^canvases\/[^/]+\.canvas$/.test(path)) throw new SchemaError(`Canvas path is outside canvases/: ${path}`, { code: "SIDECAR_CANVAS_PATH" });
+    if (record.id === data.rootId && path !== ROOT_CANVAS_PATH) throw new SchemaError("Root canvas must use canvases/root.canvas", { code: "SIDECAR_CANVAS_PATH" });
+    const fold = caseFoldKey(path);
+    if (folds.has(fold)) throw new SchemaError(`Canvas path collision: ${path}`, { code: "SIDECAR_CANVAS_COLLISION" });
+    folds.set(fold, path);
+    if (record.id === data.rootId && record.parentId !== null && record.parentId !== undefined) throw new SchemaError("Root canvas cannot have a parent", { code: "SIDECAR_HIERARCHY" });
+    if (record.id !== data.rootId && (typeof record.parentId !== "string" || !record.parentId || record.parentId === record.id)) throw new SchemaError(`Invalid parent for canvas: ${record.id}`, { code: "SIDECAR_HIERARCHY" });
+    if (record.id !== data.rootId && (typeof record.portalNodeId !== "string" || !record.portalNodeId)) throw new SchemaError(`Nested canvas needs a portal node: ${record.id}`, { code: "SIDECAR_HIERARCHY" });
+    if (record.portalNodeId !== null && record.portalNodeId !== undefined && (typeof record.portalNodeId !== "string" || !record.portalNodeId)) throw new SchemaError(`Invalid portal node for canvas: ${record.id}`, { code: "SIDECAR_HIERARCHY" });
+  }
+  for (const record of Object.values(canvases)) {
+    if (record.parentId !== null && record.parentId !== undefined && !canvases[record.parentId]) throw new SchemaError(`Missing parent canvas: ${record.parentId}`, { code: "SIDECAR_HIERARCHY" });
+  }
+  for (const record of Object.values(canvases)) {
+    const seen = new Set([record.id]);
+    let parent = record.parentId;
+    while (parent !== null && parent !== undefined) {
+      if (seen.has(parent)) throw new SchemaError("Canvas hierarchy contains a cycle", { code: "SIDECAR_HIERARCHY" });
+      seen.add(parent); parent = canvases[parent]?.parentId ?? null;
+    }
   }
   if (typeof data.activeId !== "string" || !canvases[data.activeId]) data.activeId = data.rootId;
   data.johnnyDecimal ||= { enabled: false, entries: {} };
@@ -97,10 +119,8 @@ export function parseSidecar(text) {
 }
 
 // Read the sidecar and re-attach each canvas document from its .canvas file.
-// Returns null when no sidecar exists yet (a fresh vault). A missing or invalid
-// canvas file never loses hierarchy: the record is kept with an empty document
-// plus a diagnostic (plan §11.5 missing-reference handling, Phase 4 crash
-// recovery — "interrupted canvas save recovers without hierarchy loss").
+// Missing or malformed documents are represented as read-only repair placeholders;
+// their raw bytes are retained and save() never substitutes or overwrites them.
 export async function loadWorkspace(vault) {
   let sidecarText;
   try { sidecarText = await vault.read(SIDECAR_PATH); }
@@ -112,16 +132,24 @@ export async function loadWorkspace(vault) {
   const diagnostics = [];
   const canvases = {};
   for (const record of Object.values(sidecar.canvases)) {
-    let document = { nodes: [], edges: [] };
+    let document = { nodes: [], edges: [] }, rawContent = null, readOnly = false;
     try {
-      const parsed = JSON.parse(await vault.read(record.path));
+      rawContent = await vault.read(record.path);
+      const parsed = JSON.parse(rawContent);
       if (isCanvas(parsed)) document = parsed;
-      else diagnostics.push({ path: record.path, code: "CANVAS_INVALID", message: `Canvas document failed validation: ${record.path}` });
+      else { readOnly = true; diagnostics.push({ path: record.path, code: "CANVAS_INVALID", message: `Canvas document failed validation: ${record.path}` }); }
     } catch (err) {
+      readOnly = true;
       const code = err && err.code === "NOT_FOUND" ? "CANVAS_MISSING" : "CANVAS_PARSE";
+      if (err && err.code !== "NOT_FOUND") { try { rawContent = await vault.read(record.path); } catch (_) {} }
       diagnostics.push({ path: record.path, code, message: `${code === "CANVAS_MISSING" ? "Missing" : "Unreadable"} canvas file: ${record.path}` });
     }
-    canvases[record.id] = { ...record, document };
+    const jdEntry = sidecar.johnnyDecimal?.entries?.[record.jdCode];
+    canvases[record.id] = {
+      ...record,
+      ...(record.jdKind || !jdEntry?.kind ? {} : { jdKind: jdEntry.kind }),
+      document, rawContent, readOnly, repairRequired: readOnly,
+    };
   }
   return {
     // In-memory workspace shape consumed by app.js (its `version: 1` contract),
@@ -142,6 +170,7 @@ export class WorkspaceStore {
   constructor(vault) {
     this.vault = vault;
     this.hashes = new Map(); // path -> last-known content hash
+    this.ownedCanvasPaths = new Set(); // paths owned by the last loaded/saved sidecar
     this._queue = Promise.resolve();
   }
 
@@ -156,7 +185,10 @@ export class WorkspaceStore {
   async load() {
     return this._enqueue(async () => {
       const result = await loadWorkspace(this.vault);
-      if (result) await this._refreshHashes();
+      if (result) {
+        await this._refreshHashes();
+        this.ownedCanvasPaths = new Set(Object.values(result.workspace.canvases).map((record) => record.path));
+      }
       return result;
     });
   }
@@ -178,11 +210,23 @@ export class WorkspaceStore {
 
   async _save(workspace, fresh) {
     const sidecar = toSidecar(workspace);
-    const written = [];
-    // 1. Write every canvas document to its canonical path (validated first).
+    // Validate the complete metadata graph before the first write. In
+    // particular, this prevents a malformed path from making a canvas write
+    // overwrite a life-entity file or from creating a path collision.
+    parseSidecar(JSON.stringify(sidecar));
+    const states = [];
     for (const record of Object.values(sidecar.canvases)) {
-      const doc = workspace.canvases[record.id]?.document || { nodes: [], edges: [] };
+      const state = workspace.canvases[record.id];
+      if (state?.readOnly || state?.repairRequired) continue;
+      const doc = state?.document;
       if (!isCanvas(doc)) throw new SchemaError(`Refusing to write invalid canvas document for ${record.id}`, { code: "CANVAS_INVALID" });
+      states.push({ record, doc });
+    }
+    const written = [];
+    // TODO(deferred, plan S14): compare canonical hashes and write only changed
+    // canvas documents; keep this correctness-first whole-space save for v1.
+    // 1. Write every canvas document to its canonical path (validated first).
+    for (const { record, doc } of states) {
       const expectedHash = fresh ? null : (this.hashes.get(record.path) ?? null);
       const meta = await this.vault.write(record.path, canvasToJSON(doc), { expectedHash, mediaType: CANVAS_MEDIA_TYPE });
       this.hashes.set(record.path, meta.hash);
@@ -192,16 +236,23 @@ export class WorkspaceStore {
     const sidecarExpected = fresh ? null : (this.hashes.get(SIDECAR_PATH) ?? null);
     const sidecarMeta = await this.vault.write(SIDECAR_PATH, JSON.stringify(sidecar, null, 2) + "\n", { expectedHash: sidecarExpected, mediaType: SIDECAR_MEDIA_TYPE });
     this.hashes.set(SIDECAR_PATH, sidecarMeta.hash);
-    // 3. Remove canvas files no longer referenced by the sidecar (orphans).
+    // 3. Remove only canvas files owned by the previous sidecar. Unknown
+    // canvases are recovery orphans and must never be destroyed by a stale
+    // workspace snapshot. CAS protects a previously owned file edited outside
+    // this store.
     const referenced = new Set(Object.values(sidecar.canvases).map((r) => r.path));
     const orphans = [];
-    for (const meta of await this.vault.list("canvases/")) {
-      if (!referenced.has(meta.path)) {
-        await this.vault.remove(meta.path);
-        this.hashes.delete(meta.path);
-        orphans.push(meta.path);
-      }
+    for (const path of this.ownedCanvasPaths) {
+      if (referenced.has(path)) continue;
+      const expectedHash = this.hashes.get(path);
+      if (expectedHash === undefined) continue;
+      const current = await this.vault.stat(path);
+      if (!current) { this.hashes.delete(path); continue; }
+      await this.vault.remove(path, { expectedHash });
+      this.hashes.delete(path);
+      orphans.push(path);
     }
+    this.ownedCanvasPaths = new Set(referenced);
     return { sidecarHash: sidecarMeta.hash, files: written, orphans, revision: this.vault.revision };
   }
 }

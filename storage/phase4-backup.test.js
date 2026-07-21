@@ -7,7 +7,7 @@ import { MemoryVault } from "./memory-vault.js";
 import { WorkspaceStore, SIDECAR_PATH, loadWorkspace } from "./workspace-vault.js";
 import { serializeTask } from "./entity-codec.js";
 import {
-  exportBundle, serializeBundle, parseBundle, validateBundle, importBundle,
+  exportBundle, serializeBundle, parseBundle, validateBundle, importBundle, assertCompleteExport,
   BACKUP_FORMAT, BACKUP_VERSION,
 } from "./workspace-backup.js";
 import { SchemaError, PathError } from "./vault-errors.js";
@@ -165,8 +165,32 @@ test("validateBundle flags a sidecar reference to a missing canvas", async () =>
   const { bundle } = await exportBundle(vault);
   const missing = structuredClone(bundle);
   missing.files = missing.files.filter((f) => f.path !== "canvases/planning.canvas");
-  const summary = await validateBundle(missing);
-  assert.ok(summary.diagnostics.some((d) => d.code === "CANVAS_MISSING" && d.path === "canvases/planning.canvas"));
+  await assert.rejects(() => validateBundle(missing), (e) => e.code === "CANVAS_FILE_REFERENCE");
+});
+
+test("staging import activation copies the canonical files into the reload vault", async () => {
+  const source = await populatedVault();
+  const { bundle } = await exportBundle(source);
+  const staging = new MemoryVault();
+  await importBundle(staging, serializeBundle(bundle));
+  const canonical = new MemoryVault();
+  await canonical.restore(await staging.snapshot());
+  assert.equal(await canonical.read(SIDECAR_PATH), await staging.read(SIDECAR_PATH));
+  assert.equal(await canonical.read(TASK_PATH), await staging.read(TASK_PATH));
+  assert.deepEqual((await canonical.list("canvases/")).map((meta) => meta.path), (await staging.list("canvases/")).map((meta) => meta.path));
+});
+
+test("assertCompleteExport refuses to present skipped files as a complete backup", () => {
+  assert.throws(() => assertCompleteExport([{ path: "notes/unreadable.md", code: "FILE_UNREADABLE" }]), (e) => e.code === "BACKUP_INCOMPLETE");
+});
+
+test("importBundle rejects a non-empty staging vault before writing", async () => {
+  const source = await populatedVault();
+  const { bundle } = await exportBundle(source);
+  const staging = new MemoryVault();
+  await staging.write("keep.md", "do not replace");
+  await assert.rejects(() => importBundle(staging, serializeBundle(bundle)), (error) => error.code === "IMPORT_NOT_EMPTY");
+  assert.equal(await staging.read("keep.md"), "do not replace");
 });
 
 test("importBundle writes files first and the sidecar last", async () => {

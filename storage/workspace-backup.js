@@ -54,6 +54,18 @@ export function serializeBundle(bundle) {
   return JSON.stringify(bundle, null, 2) + "\n";
 }
 
+// Export callers must not present a partial bundle as a successful backup.
+// Keeping diagnostics on exportBundle is useful to non-UI tooling, while this
+// guard gives interactive callers a single, explicit completeness check.
+export function assertCompleteExport(diagnostics = []) {
+  if (diagnostics.length) {
+    const paths = diagnostics.map((item) => item.path).filter(Boolean).join(", ");
+    throw new SchemaError(`Incomplete backup; unreadable files were skipped${paths ? `: ${paths}` : ""}`, {
+      code: "BACKUP_INCOMPLETE", details: diagnostics,
+    });
+  }
+}
+
 // Parse + validate the envelope only (no vault access, no writes).
 export function parseBundle(text) {
   let data;
@@ -61,7 +73,7 @@ export function parseBundle(text) {
   catch (err) { throw new ParseError(`Bundle is not valid JSON: ${err.message}`, { code: "BUNDLE_PARSE" }); }
   if (!data || typeof data !== "object" || Array.isArray(data)) throw new SchemaError("Bundle is not an object", { code: "BUNDLE_SCHEMA" });
   if (data.format !== BACKUP_FORMAT) throw new SchemaError(`Unexpected bundle format: ${data.format}`, { code: "BUNDLE_FORMAT" });
-  if (data.version === 1) throw new SchemaError("Version-1 bundles import via the profile migration (Phase 6)", { code: "BUNDLE_VERSION_1" });
+  if (data.version === 1) throw new SchemaError("Version-1 bundles are not supported in canonical files-only v1; export a version-2 bundle", { code: "BUNDLE_VERSION_1" });
   if (data.version !== BACKUP_VERSION) throw new SchemaError(`Unsupported bundle version: ${data.version}`, { code: "BUNDLE_VERSION" });
   if (!data.workspace || typeof data.workspace !== "object") throw new SchemaError("Bundle missing workspace", { code: "BUNDLE_SCHEMA" });
   if (!Array.isArray(data.files)) throw new SchemaError("Bundle missing files array", { code: "BUNDLE_SCHEMA" });
@@ -106,6 +118,16 @@ export async function validateBundle(data) {
       diagnostics.push({ path: dupePaths[0], code: "DUPLICATE_ID", message: `Duplicate orbit-id ${id}`, details: { orbitId: id, paths: dupePaths } });
     }
   }
+  const canvasDocs = new Map();
+  for (const file of data.files.filter((f) => f.path.endsWith(".canvas"))) {
+    let doc; try { doc = JSON.parse(file.text); } catch (_) { continue; }
+    canvasDocs.set(file.path, doc);
+    for (const node of doc.nodes || []) if (node.type === "file") {
+      let ref;
+      try { ref = assertSafePath(node.file); } catch (err) { throw new PathError(`Invalid file-node reference: ${node.file}`, { code: "CANVAS_FILE_REFERENCE", cause: err }); }
+      if (!paths.has(ref)) throw new SchemaError(`Canvas file-node references missing file: ${ref}`, { code: "CANVAS_FILE_REFERENCE" });
+    }
+  }
   for (const record of Object.values(sidecar.canvases)) {
     if (!paths.has(record.path)) diagnostics.push({ path: record.path, code: "CANVAS_MISSING", message: `Sidecar references missing canvas: ${record.path}` });
   }
@@ -118,10 +140,13 @@ export async function validateBundle(data) {
 // only after validation + indexing succeed.
 export async function importBundle(vault, bundleText) {
   const data = parseBundle(bundleText);
-  const summary = await validateBundle(data); // throws before any write on hard errors
+  const existing = await vault.list("");
+  if (existing.length) throw new SchemaError("Import requires an empty staging vault", { code: "IMPORT_NOT_EMPTY" });
+  const summary = await validateBundle(data); // all validation precedes the first write
+  if (summary.diagnostics.length) throw new SchemaError("Bundle has unresolved validation diagnostics", { code: "BUNDLE_INVALID", details: summary.diagnostics });
   for (const file of data.files) {
-    await vault.write(assertSafePath(file.path), file.text, { mediaType: file.mediaType || mediaTypeFor(file.path) });
+    await vault.write(assertSafePath(file.path), file.text, { expectedHash: null, mediaType: file.mediaType || mediaTypeFor(file.path) });
   }
-  await vault.write(SIDECAR_PATH, JSON.stringify(summary.sidecar, null, 2) + "\n", { mediaType: "application/json" });
+  await vault.write(SIDECAR_PATH, JSON.stringify(summary.sidecar, null, 2) + "\n", { expectedHash: null, mediaType: "application/json" });
   return summary;
 }

@@ -1,7 +1,7 @@
 // Phase 3 test suite (LifeIndexer) — run with:
 //   node --test storage/phase3.test.js
 // Exercises the indexer against the in-memory vault + index ports. The
-// SQL-backed port in life-store.js mirrors MemoryIndex and is browser-verified.
+// The in-memory port is the canonical-v1 runtime index and is browser-verified.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -98,6 +98,16 @@ test("duplicate orbit-ids across files produce DUPLICATE_ID diagnostics", async 
   assert.deepEqual(dupes.map((d) => d.sourcePath).sort(), ["tasks/one--x1x1x1.md", "tasks/two--x2x2x2.md"]);
 });
 
+test("a malformed duplicate identity suppresses the valid sibling", async () => {
+  const { vault, index, indexer } = makeIndexer();
+  await vault.write("tasks/good.md", taskMd("task-dup", "Good"));
+  const malformed = taskMd("task-dup", "Broken").replace("status: next", "status: bogus");
+  await vault.write("tasks/bad.md", malformed);
+  await indexer.rebuild();
+  assert.equal(index.allTasks().length, 0);
+  assert.equal(index.allDiagnostics().filter((d) => d.errorCode === "DUPLICATE_ID").length, 2);
+});
+
 test("detectDuplicateIds ignores null entity ids", () => {
   const diags = detectDuplicateIds([{ entityId: null, path: "a" }, { entityId: null, path: "b" }]);
   assert.equal(diags.length, 0);
@@ -187,6 +197,20 @@ test("warm reconciliation reindexes only changed paths", async () => {
   assert.equal(index.allTasks().length, 2);
 });
 
+test("warm move followed by modify preserves old-path removal", async () => {
+  const { vault, index, indexer } = makeIndexer();
+  const oldPath = "tasks/old.md", newPath = "tasks/new.md";
+  await vault.write(oldPath, taskMd("task-move", "Before"));
+  await indexer.rebuild();
+  const rev = vault.revision;
+  await vault.move(oldPath, newPath);
+  await vault.write(newPath, taskMd("task-move", "After"));
+  await indexer.reconcileWarm(rev);
+  assert.equal(index.getSourceFile(oldPath), null);
+  assert.equal(index.getSourceFile(newPath).contentHash, (await vault.stat(newPath)).hash);
+  assert.equal(index.taskById("task-move").title, "After");
+});
+
 // --- full rebuild idempotency ------------------------------------------------
 
 test("full rebuild is idempotent", async () => {
@@ -228,6 +252,13 @@ test("journal, calendar-event, and habit-log entries are projected", async () =>
   assert.equal(entries.length, 1);
   assert.equal(entries[0].habitId, "habit-walk");
   assert.equal(entries[0].status, "done");
+});
+
+test("stats excludes the workspace sidecar from life source-file counts", async () => {
+  const { vault, indexer } = makeIndexer();
+  await vault.write(".orbit/workspace.json", "{}", { mediaType: "application/json" });
+  const stats = await indexer.rebuild();
+  assert.equal(stats.sourceFiles, 0);
 });
 
 test("index state records generation and indexed revision", async () => {
