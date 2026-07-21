@@ -26,6 +26,7 @@
       <div class="view-title">
         <button class="icon-btn sidebar-toggle" id="sidebarToggle" aria-label="Toggle library">☰</button>
         <div><nav class="canvas-breadcrumbs" id="canvasBreadcrumbs" aria-label="Canvas hierarchy"></nav><input id="canvasTitle" value="Life OS — Summer" aria-label="Canvas title" /></div>
+        <nav class="app-views" aria-label="Application views"><button type="button" class="active" data-app-view="canvas">Canvas</button><button type="button" data-app-view="today">Today</button></nav>
       </div>
 
       <nav class="top-actions" aria-label="Document actions">
@@ -45,6 +46,7 @@
           <button class="add-card" data-add="goal"><span class="add-icon goal-icon">◎</span><b>Goal</b><small>Desired outcome</small></button>
           <button class="add-card" data-add="habit"><span class="add-icon habit-icon">↻</span><b>Habit</b><small>Daily practice</small></button>
           <button class="add-card" data-add="project"><span class="add-icon project-icon">◇</span><b>Project</b><small>Active work</small></button>
+          <button class="add-card wide" data-add="task"><span class="add-icon task-icon">✓</span><b>Task</b><small>Action with status, schedule, and due date</small></button>
           <button class="add-card wide" data-add="ai-note"><span class="add-icon ai-note-icon">✎</span><b>AI note</b><small>Ask a question, then create a note</small></button>
           <button class="add-card wide" data-add="ai"><span class="add-icon ai-icon">✦</span><b>AI operator</b><small>Connected inputs → generated note</small></button>
           <button class="add-card wide" data-add="widget"><span class="add-icon widget-icon">◉</span><b>Live widget</b><small>Sandboxed HTML, CSS, or Three.js</small></button>
@@ -97,6 +99,18 @@
         <div class="minimap" id="minimap"><div class="mini-world" id="miniWorld"></div><div class="mini-viewport" id="miniViewport"></div></div>
         <div class="toast" id="toast" role="status"></div>
       </div>
+
+      <section class="today-view" id="todayView" aria-labelledby="todayHeading" hidden>
+        <header class="today-head"><div><span class="eyebrow" id="todayDate"></span><h1 id="todayHeading">Today</h1><p>Choose what deserves attention. Everything else can remain safely in its canvas.</p></div><button type="button" class="button primary" id="newTodayTask">＋ Add task</button></header>
+        <div class="today-stats" aria-label="Today summary"><div><b id="todayPlannedCount">0</b><span>Planned</span></div><div><b id="todayDueCount">0</b><span>Overdue</span></div><div><b id="todayDoneCount">0</b><span>Completed</span></div></div>
+        <form class="today-quick-add" id="todayQuickAdd"><label for="todayTaskTitle">Quick capture for today</label><div><input id="todayTaskTitle" required placeholder="What needs to move forward?"><button class="button primary" type="submit">Add for today</button></div></form>
+        <div class="today-grid">
+          <section class="today-section today-focus"><header><div><span>01</span><h2>Planned today</h2></div><small>Scheduled actions</small></header><div id="todayScheduled"></div></section>
+          <section class="today-section"><header><div><span>02</span><h2>Overdue</h2></div><small>Needs a decision</small></header><div id="todayOverdue"></div></section>
+          <section class="today-section"><header><div><span>03</span><h2>Inbox & next</h2></div><small>Available work</small></header><div id="todayQueue"></div></section>
+          <section class="today-section"><header><div><span>04</span><h2>Completed</h2></div><small>Today’s progress</small></header><div id="todayCompleted"></div></section>
+        </div>
+      </section>
     </main>
 
     <aside class="inspector" id="inspector">
@@ -127,6 +141,21 @@
       <footer id="aiProviderStatus"><i></i> Local mode — canvas data stays in this browser</footer>
     </aside>
   </div>
+
+  <dialog class="settings-dialog task-dialog" id="taskDialog">
+    <form id="taskForm">
+      <header><div><span>✓</span><div><b>Create task</b><small>Portable card, queryable life data</small></div></div><button type="button" id="closeTaskDialog" aria-label="Close">×</button></header>
+      <div class="settings-body">
+        <label class="settings-field"><span>Task</span><input id="taskTitle" required autofocus placeholder="Review monthly budget"></label>
+        <label class="settings-field"><span>Notes</span><textarea id="taskNotes" placeholder="Optional context or desired outcome"></textarea></label>
+        <label class="settings-field"><span>Canvas</span><select id="taskCanvas" required></select></label>
+        <div class="task-field-row"><label class="settings-field"><span>Status</span><select id="taskStatus"><option value="inbox">Inbox</option><option value="next">Next</option><option value="scheduled">Scheduled</option><option value="waiting">Waiting</option></select></label><label class="settings-field"><span>Priority</span><select id="taskPriority"><option value="">None</option><option value="1">High</option><option value="2">Medium</option><option value="3">Low</option></select></label></div>
+        <div class="task-field-row"><label class="settings-field"><span>Scheduled</span><input id="taskScheduledOn" type="date"></label><label class="settings-field"><span>Due</span><input id="taskDueOn" type="date"></label></div>
+        <div class="settings-test" id="taskResult" role="status"></div>
+      </div>
+      <footer><span></span><button type="button" class="button ghost" id="cancelTaskDialog">Cancel</button><button type="submit" class="button primary" id="createTaskButton">Create task</button></footer>
+    </form>
+  </dialog>
 
   <dialog class="settings-dialog jd-dialog" id="johnnyDecimalDialog">
     <form id="johnnyDecimalForm">

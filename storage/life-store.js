@@ -126,8 +126,14 @@ class SqliteLifeStore {
     if (canvasId) { where.push("canvas_id=?"); bind.push(canvasId); }
     return this.query(`SELECT * FROM tasks${where.length ? ` WHERE ${where.join(" AND ")}` : ""} ORDER BY COALESCE(scheduled_on,due_on,'9999-12-31'), COALESCE(priority,99), created_at`, bind).map(row => this.mapTask(row));
   }
-  mapTask(row) { return { ...row, recurrence: fromJSON(row.recurrence_json) }; }
+  mapTask(row) { return { id:row.id,canvasId:row.canvas_id,nodeId:row.node_id,blockKey:row.block_key,title:row.title,status:row.status,priority:row.priority,scheduledOn:row.scheduled_on,dueOn:row.due_on,completedAt:row.completed_at,estimateMinutes:row.estimate_minutes,recurrence:fromJSON(row.recurrence_json),createdAt:row.created_at,updatedAt:row.updated_at }; }
+  updateTask(id, patch = {}) {
+    const columns={title:"title",status:"status",priority:"priority",scheduledOn:"scheduled_on",dueOn:"due_on",completedAt:"completed_at",estimateMinutes:"estimate_minutes",recurrence:"recurrence_json"},sets=[],bind=[];
+    for(const [key,column] of Object.entries(columns))if(Object.hasOwn(patch,key)){sets.push(`${column}=?`);bind.push(key==="recurrence"?asJSON(patch[key]):patch[key]??null);}
+    if(!sets.length)return this.task(id);sets.push("updated_at=?");bind.push(now(),id);this.run(`UPDATE tasks SET ${sets.join(",")} WHERE id=?`,bind);this.log("task.updated",id,patch);return this.task(id);
+  }
   completeTask(id, completedAt = now()) { this.run("UPDATE tasks SET status='done',completed_at=?,updated_at=? WHERE id=?", [completedAt, now(), id]); this.log("task.completed", id); return this.task(id); }
+  deleteTask(id){this.run("DELETE FROM tasks WHERE id=?",[id]);this.log("task.deleted",id);return true;}
 
   upsertHabit(habit) {
     const timestamp = now();

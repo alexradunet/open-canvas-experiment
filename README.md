@@ -13,6 +13,8 @@ A small, standalone proof of concept for a life-management app whose primary int
 - Johnny Decimal areas, categories, and items with automatic IDs, validation, numeric sorting, and direct lookup
 - Draggable and resizable text, link, file, group, and sub-canvas portal nodes
 - Goals, projects, habits, ideas, and notes represented with standard JSON Canvas fields
+- Portable task cards backed by SQLite status, scheduling, due dates, and priority
+- A Today dashboard for planned, overdue, inbox/next, and completed work
 - Obsidian-style side handles for dragging connections directly between cards, plus connect mode
 - Markdown cards and task checkboxes
 - Inspector for content, geometry, colors, and edge routing
@@ -49,6 +51,8 @@ Then open <http://localhost:4173>.
 | Connect | Drag any side handle to another card, or press `C` and select two nodes |
 | Select | `V` |
 | Delete | `Delete` / `Backspace` |
+| Switch workspace view | Select **Canvas** or **Today** in the header |
+| Add task | Select **Task** in the sidebar or **Add task** in Today |
 | Open Johnny Decimal index | Select **JD** beside Canvases or press `Ctrl/Cmd + K` |
 | Export current canvas | `Ctrl/Cmd + S` |
 | Export all canvases | Select **Export whole space** in the sidebar |
@@ -67,9 +71,22 @@ Index
         └── 11.02 — Taxes     item canvas
 ```
 
-The starter includes 9 areas, 17 categories, and 34 practical item notes covering life admin, health and fitness, career, money, home systems, relationships, learning, hobbies, travel, and archives. It is an editable example rather than personal, financial, or medical advice.
+The starter includes 9 areas, 17 categories, 34 practical item notes, and 9 task cards covering life admin, health and fitness, career, money, home systems, relationships, learning, hobbies, travel, and archives. It is an editable example rather than personal, financial, or medical advice.
 
 Area, category, and canvas-item portals remain standard JSON Canvas file nodes. Item notes store their identifier in a harmless Markdown comment and heading. IDs are checked for the correct parent range, duplicates are rejected, and the canvas hierarchy is sorted numerically. The same dialog provides direct **Go to ID** navigation.
+
+## Tasks and Today
+
+A task is both a portable text node and a SQLite record:
+
+```md
+<!-- orbit:task task-id -->
+# Review monthly budget
+```
+
+The canvas preserves its readable title, notes, geometry, and relationships. SQLite stores workflow status, priority, planned date, due date, estimate, recurrence data, and completion time. Deleting a task card removes its database record; imported markers are reconciled automatically.
+
+Use the task inspector to edit metadata, or switch to **Today** for four projections of the same records: planned today, overdue, inbox/next, and completed today. Quick capture schedules a task for the current date while the full task dialog can place it in any nested canvas.
 
 ## Local SQLite life database
 

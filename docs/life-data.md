@@ -98,6 +98,26 @@ life.recordHabit({
 
 The API is intentionally repository-like so an OPFS or native adapter can replace the current backend without changing canvas components.
 
+## Task projection and Today
+
+Task cards carry an inert, portable marker:
+
+```md
+<!-- orbit:task task-123 -->
+# Review monthly budget
+```
+
+On database startup, Orbit reconciles every marker with the `tasks` table. New task cards write both layers: the text node is appended to the selected JSON Canvas document and task metadata is committed to SQLite. The inspector updates status, priority, planned date, and due date through `LifeStore.updateTask()`.
+
+The Today screen is a live SQL-backed projection grouped into:
+
+- scheduled for the local date;
+- overdue and still actionable;
+- inbox and next tasks;
+- tasks completed on the local date.
+
+Completing a task from either its canvas card or Today writes one database state change and refreshes both projections.
+
 ## Index reconciliation
 
 At startup, Orbit scans every workspace canvas into the `canvases` and `canvas_nodes` tables. Normal saves update the active canvas index. The index stores titles and content hashes, not the full document as a second source of truth.

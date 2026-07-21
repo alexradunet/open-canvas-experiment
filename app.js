@@ -62,6 +62,17 @@ const JD_LIFE_STARTER = [
     ["91","Completed & learned",[["91.01","Completed projects","Move finished commitments here with links back to their outcomes."],["91.02","Lessons learned","Short reflections worth carrying into the next season of life."]]]
   ]]
 ];
+const JD_LIFE_STARTER_TASKS = [
+  ["12","Complete the weekly review","Clear inboxes, review the calendar, and choose three outcomes."],
+  ["21","Schedule three training sessions","Place realistic strength sessions on this week’s calendar."],
+  ["22","Book the routine checkup","Choose a provider and reserve a suitable appointment."],
+  ["31","Confirm quarterly priorities","Align the next outcomes with the manager before doing more work."],
+  ["41","Reconcile this month’s accounts","Compare transactions with the monthly budget."],
+  ["51","Replace apartment filters","Check the maintenance list and order replacements if needed."],
+  ["61","Plan the next family visit","Offer two dates and agree on the next visit."],
+  ["71","Choose the next book","Pick one book from the queue before adding another."],
+  ["81","Choose dates for the autumn trip","Check the calendar and agree on a realistic budget window."]
+];
 
 const $ = (selector, root=document) => root.querySelector(selector);
 const $$ = (selector, root=document) => [...root.querySelectorAll(selector)];
@@ -78,6 +89,7 @@ let currentTool = "select";
 let connectSource = null;
 let connectSourceSide = null;
 let activeFilter = "all";
+let activeAppView = "canvas";
 let spaceDown = false;
 let saveTimer;
 const aiCardRuntime=new Map();
@@ -206,9 +218,10 @@ function createJohnnyDecimalStarterWorkspace(){
       items.forEach(([itemCode,itemTitle,itemBody],itemIndex)=>{const itemNodeId=starterId("jd-item",itemCode);categoryDocument.nodes.push({id:itemNodeId,type:"text",x:itemIndex*350,y:0,width:310,height:190,color:"3",text:`<!-- orbit:jd ${itemCode} -->\n# ${jdDisplayTitle(itemCode,itemTitle)}\n${itemBody}`});result.johnnyDecimal.entries[itemCode]={code:itemCode,title:itemTitle,kind:"item",parentCanvasId:categoryCanvasId,nodeId:itemNodeId,canvasId:null,itemFormat:"note"};});
     });
   });
+  JD_LIFE_STARTER_TASKS.forEach(([categoryCode,title,notes])=>{const entry=result.johnnyDecimal.entries[categoryCode],record=result.canvases[entry.canvasId],taskId=`starter-task-${categoryCode}`,nodeId=`starter-task-node-${categoryCode}`;record.document.nodes.push({id:nodeId,type:"text",x:0,y:240,width:310,height:180,color:"5",text:buildTaskText(taskId,title,notes)});});
   return normalizeWorkspace(result);
 }
-function resetLifeDatabase(){Promise.resolve(window.orbitLifeReady).then(store=>{if(!store)return;store.importSnapshot({schemaVersion:1});store.syncWorkspaceIndex(workspace);});}
+function resetLifeDatabase(){Promise.resolve(window.orbitLifeReady).then(store=>{if(!store)return;store.importSnapshot({schemaVersion:1});store.syncWorkspaceIndex(workspace);reconcileTaskMarkers(store);renderToday();});}
 function loadJohnnyDecimalStarter(){
   if(!confirm("Replace your current local space with the fictional age-30 Johnny Decimal starter? Export your space first if you want a backup."))return;workspace=createJohnnyDecimalStarterWorkspace();currentCanvasId=workspace.rootId;documentData=workspace.canvases[currentCanvasId].document;camera={x:80,y:55,zoom:.78};selected=null;connectSource=null;connectSourceSide=null;$("#johnnyDecimalDialog")?.close();$("#canvasTitle").value=canvasRecord().title;persistWorkspace();resetLifeDatabase();render();fitView();toast("Johnny Decimal starter space loaded");
 }
@@ -257,6 +270,28 @@ function createJDEntry({parentCanvasId,code,title,itemFormat="canvas"}){
   else node={id:nodeId,type:"text",...position,width:size[0],height:size[1],color:"3",text:`<!-- orbit:jd ${code} -->\n# ${displayTitle}\nAdd the context, outcome, or reference for this item.`};
   parent.document.nodes ||= [];parent.document.nodes.push(node);workspace.johnnyDecimal.entries[code]={code,title,kind:checked.kind,parentCanvasId,nodeId,canvasId,itemFormat:isCanvasEntry?"canvas":"note"};scheduleSave();$("#johnnyDecimalDialog")?.close();revealWorkspaceNode(parentCanvasId,nodeId);toast(`${formatJDCode(code)} added to the index`);return node;
 }
+function localDateISO(date=new Date()){return `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,"0")}-${String(date.getDate()).padStart(2,"0")}`;}
+function taskStore(){return window.orbitLifeStore||null;}
+function reconcileTaskMarkers(store=taskStore()){
+  if(!store)return;for(const record of Object.values(workspace.canvases))for(const node of record.document.nodes||[]){const id=taskIdFromNode(node);if(!id)continue;const title=taskTitleFromNode(node),existing=store.task(id);if(!existing)store.upsertTask({id,canvasId:record.id,nodeId:node.id,title,status:"inbox"});else if(existing.title!==title||existing.canvasId!==record.id||existing.nodeId!==node.id)store.upsertTask({...existing,canvasId:record.id,nodeId:node.id,title});}
+}
+async function createTask({title,notes="",canvasId=currentCanvasId,status="inbox",scheduledOn=null,dueOn=null,priority=null}={}){
+  title=String(title||"").trim();if(!title)throw new Error("Add a task title.");const store=await window.orbitLifeReady;if(!store)throw new Error("The local life database is unavailable.");const record=workspace.canvases[canvasId];if(!record)throw new Error("Choose an existing canvas.");const id=uid("task"),nodeId=uid("node"),position=nextNodePosition(record.document,310,180),node={id:nodeId,type:"text",...position,width:310,height:180,color:"5",text:buildTaskText(id,title,notes)};record.document.nodes ||= [];record.document.nodes.push(node);store.upsertTask({id,canvasId,nodeId,title,status,scheduledOn:scheduledOn||null,dueOn:dueOn||null,priority:priority===""||priority==null?null:Number(priority)});store.syncCanvasRecord(record);scheduleSave();renderToday();if(canvasId===currentCanvasId&&activeAppView==="canvas"){selected={kind:"node",id:nodeId};shell.classList.add("inspector-open");render();}toast("Task created");return node;
+}
+function openTaskDialog({today=false}={}){
+  const dialog=$("#taskDialog"),select=$("#taskCanvas");select.innerHTML=orderedCanvasRecords().map(record=>`<option value="${escapeHTML(record.id)}">${escapeHTML(record.title)}</option>`).join("");select.value=currentCanvasId;$("#taskTitle").value="";$("#taskNotes").value="";$("#taskStatus").value=today?"scheduled":"inbox";$("#taskScheduledOn").value=today?localDateISO():"";$("#taskDueOn").value="";$("#taskPriority").value="";$("#taskResult").textContent="";dialog.showModal();setTimeout(()=>$("#taskTitle").focus(),60);
+}
+function taskContext(task){return workspace.canvases[task.canvasId]?.title||"Unknown canvas";}
+function taskListHTML(tasks,empty){
+  if(!tasks.length)return `<div class="today-empty">${escapeHTML(empty)}</div>`;return tasks.map(task=>`<article class="today-task ${task.status==="done"?"done":""}" data-task-id="${escapeHTML(task.id)}"><button type="button" class="task-check" data-complete-task aria-label="Complete ${escapeHTML(task.title)}">${task.status==="done"?"✓":""}</button><button type="button" class="task-copy" data-open-task><b>${escapeHTML(task.title)}</b><small>${escapeHTML(taskContext(task))}</small></button><div class="task-dates">${task.scheduledOn?`<time datetime="${task.scheduledOn}">Plan ${escapeHTML(task.scheduledOn.slice(5))}</time>`:""}${task.dueOn?`<time class="due" datetime="${task.dueOn}">Due ${escapeHTML(task.dueOn.slice(5))}</time>`:""}</div></article>`).join("");
+}
+function bindTaskList(root){
+  $$('[data-task-id]',root).forEach(row=>{const id=row.dataset.taskId,store=taskStore();$("[data-complete-task]",row).onclick=()=>{store.completeTask(id);renderToday();renderNodes();toast("Task completed");};$("[data-open-task]",row).onclick=()=>{const task=store.task(id);if(!task)return;setAppView("canvas");revealWorkspaceNode(task.canvasId,task.nodeId);};});
+}
+function renderToday(){
+  const root=$("#todayView"),store=taskStore();if(!root||!store)return;const today=localDateISO(),all=store.tasks(),active=task=>!["done","cancelled"].includes(task.status),scheduled=all.filter(task=>active(task)&&task.scheduledOn===today),overdue=all.filter(task=>active(task)&&task.dueOn&&task.dueOn<today&&task.scheduledOn!==today),queue=all.filter(task=>active(task)&&["inbox","next"].includes(task.status)&&task.scheduledOn!==today&&!overdue.includes(task)),completed=all.filter(task=>task.status==="done"&&task.completedAt&&localDateISO(new Date(task.completedAt))===today);$("#todayDate").textContent=new Intl.DateTimeFormat(undefined,{weekday:"long",month:"long",day:"numeric"}).format(new Date());$("#todayPlannedCount").textContent=scheduled.length;$("#todayDueCount").textContent=overdue.length;$("#todayDoneCount").textContent=completed.length;$("#todayScheduled").innerHTML=taskListHTML(scheduled,"Nothing scheduled yet. Choose deliberately rather than carrying everything forward.");$("#todayOverdue").innerHTML=taskListHTML(overdue,"No overdue tasks.");$("#todayQueue").innerHTML=taskListHTML(queue,"The task inbox is clear.");$("#todayCompleted").innerHTML=taskListHTML(completed,"Completed tasks will appear here.");bindTaskList(root);
+}
+function refreshLifeViews(){reconcileTaskMarkers();renderToday();renderNodes();}
 function deleteJDEntriesForCanvas(id){for(const [code,entry] of Object.entries(jdEntries()))if(entry.canvasId===id||entry.parentCanvasId===id)delete workspace.johnnyDecimal.entries[code];}
 function deleteCanvasTree(id){for(const child of Object.values(workspace.canvases).filter(record=>record.parentId===id))deleteCanvasTree(child.id);deleteJDEntriesForCanvas(id);delete workspace.canvases[id];}
 function jdParentOptions(){return orderedCanvasRecords().filter(record=>record.id===workspace.rootId||["area","category"].includes(jdContainerKind(record.id)));}
@@ -270,7 +305,10 @@ function goToJD(value){
   const code=canonicalJDCode(value),entry=jdEntries()[code],result=$("#jdLookupResult");if(!entry){result.className="settings-test error";result.textContent=`No entry found for ${formatJDCode(code)||"that ID"}.`;return;}result.className="settings-test success";result.textContent=`Opening ${formatJDCode(code)} — ${entry.title}`;setTimeout(()=>{$("#johnnyDecimalDialog").close();if(entry.canvasId)switchCanvas(entry.canvasId,{direction:"switch",fit:!workspace.canvases[entry.canvasId].camera});else revealWorkspaceNode(entry.parentCanvasId,entry.nodeId);},100);
 }
 
-const AI_CARD_MARKER="<!-- orbit:ai-card -->";
+const AI_CARD_MARKER="<!-- orbit:ai-card -->",TASK_MARKER_RE=/<!--\s*orbit:task\s+([^\s]+)\s*-->/i;
+function taskIdFromNode(node){return node?.type==="text"?node.text.match(TASK_MARKER_RE)?.[1]||null:null;}
+function taskTitleFromNode(node){return node?.text.match(/^#\s+(.+)$/m)?.[1]||"Untitled task";}
+function buildTaskText(id,title,notes=""){return `<!-- orbit:task ${id} -->\n# ${title.trim()}${notes.trim()?`\n${notes.trim()}`:""}`;}
 function isAICard(node){return node?.type==="text"&&node.text.includes(AI_CARD_MARKER);}
 function parseAICard(node){
   const lines=(node.text||"").split(/\r?\n/).filter(line=>line.trim()!==AI_CARD_MARKER),heading=lines.findIndex(line=>line.startsWith("# ")),title=heading>=0?lines[heading].slice(2).trim():"AI operator";
@@ -338,6 +376,7 @@ function renderNodes() {
       if(isAICard(node)){
         const config=parseAICard(node),inputs=inputNodesForAICard(node.id),runtime=aiCardRuntime.get(node.id)||{status:"Ready"};element.classList.add("ai-card");element.classList.toggle("running",runtime.running===true);
         content.innerHTML=`<div class="node-kicker">AI OPERATOR</div><h3 class="ai-card-title">${escapeHTML(config.title)}</h3><p class="ai-card-prompt">${escapeHTML(config.prompt)}</p><div class="ai-inputs">${inputs.length?inputs.map(input=>`<span class="ai-input-chip">← ${escapeHTML(nodeTitle(input))}</span>`).join(""):"<span class=\"ai-input-chip\">No inputs connected</span>"}</div><div class="ai-run-row"><span class="ai-run-status">${escapeHTML(runtime.status||"Ready")}</span><button class="ai-run-button" data-ai-run ${runtime.running?"disabled":""}>${runtime.running?"Running…":"Run now"}</button></div>`;
+      } else if(taskIdFromNode(node)){const taskId=taskIdFromNode(node),task=taskStore()?.task(taskId),status=task?.status||"inbox";element.classList.add("task-card");element.classList.toggle("task-complete",status==="done");element.dataset.taskId=taskId;content.innerHTML=`<div class="node-kicker">TASK · ${escapeHTML(status.toUpperCase())}</div>${markdownToHTML(node.text)}<div class="task-node-footer"><span>${task?.scheduledOn?`Plan ${escapeHTML(task.scheduledOn)}`:task?.dueOn?`Due ${escapeHTML(task.dueOn)}`:"Not scheduled"}</span><button type="button" data-node-complete-task ${status==="done"?"disabled":""}>${status==="done"?"Completed":"Mark done"}</button></div>`;
       } else {const jdCode=jdCodeFromNode(node);content.innerHTML = `<div class="node-kicker">${jdCode?`ITEM · ${escapeHTML(formatJDCode(jdCode))}`:textMeta(node)}</div>${markdownToHTML(node.text)}`;}
     } else if (node.type === "link") {
       let linkTitle = "Saved link";
@@ -356,6 +395,7 @@ function renderNodes() {
     element.addEventListener("pointerdown", event => nodePointerDown(event, node));
     $$("[data-connection-side]",element).forEach(handle=>{handle.addEventListener("pointerdown",event=>startConnectionDrag(event,node,handle.dataset.connectionSide));handle.addEventListener("keydown",event=>{if(event.key==="Enter"||event.key===" "){event.preventDefault();event.stopPropagation();connectSource=node.id;connectSourceSide=handle.dataset.connectionSide;setTool("connect");toast("Choose a destination node");}});});
     const aiRun=$("[data-ai-run]",element);if(aiRun){aiRun.addEventListener("pointerdown",event=>event.stopPropagation());aiRun.addEventListener("click",event=>{event.stopPropagation();runAICard(node.id,{manual:true});});}
+    const taskComplete=$("[data-node-complete-task]",element);if(taskComplete){taskComplete.addEventListener("pointerdown",event=>event.stopPropagation());taskComplete.addEventListener("click",event=>{event.stopPropagation();taskStore()?.completeTask(element.dataset.taskId);renderNodes();renderToday();toast("Task completed");});}
     const portalButton=$("[data-open-subcanvas]",element);if(portalButton){portalButton.addEventListener("pointerdown",event=>event.stopPropagation());portalButton.addEventListener("click",event=>{event.stopPropagation();enterSubcanvas(element.dataset.subcanvasId);});element.addEventListener("dblclick",event=>{if(event.target.closest("button"))return;event.preventDefault();event.stopPropagation();enterSubcanvas(element.dataset.subcanvasId);});}
     element.addEventListener("click", event => {
       const anchor = event.target.closest("a");
@@ -434,6 +474,9 @@ function renderEdges() {
 
 function render() {
   applyCamera(); renderEdges(); renderNodes(); renderInspector(); renderWorkspaceNavigation(); updateAssistantContext();
+}
+function setAppView(view){
+  activeAppView=view==="today"?"today":"canvas";if(activeAppView==="today")shell.classList.remove("inspector-open");$("#canvas").hidden=activeAppView!=="canvas";$("#todayView").hidden=activeAppView!=="today";$$('[data-app-view]').forEach(button=>button.classList.toggle("active",button.dataset.appView===activeAppView));if(activeAppView==="today")renderToday();else applyCamera();
 }
 function applyCamera() {
   world.style.transform = `translate(${camera.x}px,${camera.y}px) scale(${camera.zoom})`;
@@ -516,7 +559,7 @@ function setTool(tool) {
 }
 
 function addNode(kind, point) {
-  if(kind==="subcanvas")return createSubcanvas(point);
+  if(kind==="subcanvas")return createSubcanvas(point);if(kind==="task"){openTaskDialog();return;}
   const center = point || canvasPoint(canvas.getBoundingClientRect().left+canvas.clientWidth/2,canvas.getBoundingClientRect().top+canvas.clientHeight/2);
   const presets={
     note:{type:"text",color:"2",width:260,height:150,text:"# New thought\nStart writing here…"},
@@ -544,11 +587,12 @@ function renderInspector() {
   if (selected.kind==="node") {
     let contentField="";
     if (item.type==="text"&&isAICard(item)){const config=parseAICard(item);contentField=`<label class="field"><span>Operator name</span><input data-key="aiTitle" value="${escapeHTML(config.title)}"></label><label class="field"><span>AI instructions</span><textarea data-key="aiPrompt">${escapeHTML(config.prompt)}</textarea></label><div class="field-hint">Incoming connections become context. The generated note updates automatically when that context changes.</div>`;}
+    else if(item.type==="text"&&taskIdFromNode(item)){const task=taskStore()?.task(taskIdFromNode(item))||{status:"inbox"},statuses=["inbox","next","scheduled","waiting","done","cancelled"];contentField=`<label class="field"><span>Markdown</span><textarea data-key="text">${escapeHTML(item.text)}</textarea></label><label class="field"><span>Task status</span><select data-task-key="status">${statuses.map(status=>`<option value="${status}" ${task.status===status?"selected":""}>${status[0].toUpperCase()+status.slice(1)}</option>`).join("")}</select></label><div class="field-row"><label class="field"><span>Scheduled</span><input type="date" data-task-key="scheduledOn" value="${escapeHTML(task.scheduledOn||"")}"></label><label class="field"><span>Due</span><input type="date" data-task-key="dueOn" value="${escapeHTML(task.dueOn||"")}"></label></div><label class="field"><span>Priority</span><select data-task-key="priority"><option value="" ${task.priority==null?"selected":""}>None</option><option value="1" ${task.priority===1?"selected":""}>High</option><option value="2" ${task.priority===2?"selected":""}>Medium</option><option value="3" ${task.priority===3?"selected":""}>Low</option></select></label>`;}
     else if (item.type==="text") contentField=`<label class="field"><span>Markdown</span><textarea data-key="text">${escapeHTML(item.text)}</textarea></label>`;
     if (item.type==="link") contentField=`<label class="field"><span>URL</span><input data-key="url" value="${escapeHTML(item.url)}"></label>`;
     if (item.type==="file") {const subcanvasId=subcanvasIdFromNode(item),subcanvas=subcanvasId&&workspace.canvases[subcanvasId];contentField=subcanvas?`<label class="field"><span>${subcanvas.jdCode?`${escapeHTML(formatJDCode(subcanvas.jdCode))} title`:"Canvas title"}</span><input data-canvas-title="${escapeHTML(subcanvasId)}" value="${escapeHTML(subcanvas.jdTitle||subcanvas.title)}"></label><div class="field-hint">This portal is a standard JSON Canvas file node. Double-click it or zoom in to enter the nested canvas.</div><button type="button" class="button open-subcanvas-inspector" data-open-canvas="${escapeHTML(subcanvasId)}">Open sub-canvas ↘</button>`:`<label class="field"><span>File path</span><input data-key="file" value="${escapeHTML(item.file)}"></label><label class="field"><span>Subpath</span><input data-key="subpath" value="${escapeHTML(item.subpath||"")}"></label>`;}
     if (item.type==="group") contentField=`<label class="field"><span>Label</span><input data-key="label" value="${escapeHTML(item.label||"")}"></label><label class="field"><span>Background path</span><input data-key="background" value="${escapeHTML(item.background||"")}"></label>`;
-    panel.innerHTML=`<div class="inspector-head"><h3>${item.type[0].toUpperCase()+item.type.slice(1)} node</h3><button class="close-inspector">×</button></div><form class="inspector-form">${contentField}<div class="field-row"><label class="field"><span>X</span><input type="number" data-key="x" value="${item.x}"></label><label class="field"><span>Y</span><input type="number" data-key="y" value="${item.y}"></label></div><div class="field-row"><label class="field"><span>Width</span><input type="number" data-key="width" value="${item.width}"></label><label class="field"><span>Height</span><input type="number" data-key="height" value="${item.height}"></label></div><label class="field"><span>Color preset</span><div class="color-list">${colorButtons}</div></label><button type="button" class="danger-btn">Delete node</button></form>`;
+    panel.innerHTML=`<div class="inspector-head"><h3>${taskIdFromNode(item)?"Task":item.type[0].toUpperCase()+item.type.slice(1)+" node"}</h3><button class="close-inspector">×</button></div><form class="inspector-form">${contentField}<div class="field-row"><label class="field"><span>X</span><input type="number" data-key="x" value="${item.x}"></label><label class="field"><span>Y</span><input type="number" data-key="y" value="${item.y}"></label></div><div class="field-row"><label class="field"><span>Width</span><input type="number" data-key="width" value="${item.width}"></label><label class="field"><span>Height</span><input type="number" data-key="height" value="${item.height}"></label></div><label class="field"><span>Color preset</span><div class="color-list">${colorButtons}</div></label><button type="button" class="danger-btn">Delete node</button></form>`;
   } else {
     panel.innerHTML=`<div class="inspector-head"><h3>Connection</h3><button class="close-inspector">×</button></div><form class="inspector-form"><label class="field"><span>Label</span><input data-key="label" value="${escapeHTML(item.label||"")}"></label><div class="field-row"><label class="field"><span>From side</span><select data-key="fromSide">${sideOptions(item.fromSide)}</select></label><label class="field"><span>To side</span><select data-key="toSide">${sideOptions(item.toSide)}</select></label></div><label class="field"><span>Color preset</span><div class="color-list">${colorButtons}</div></label><button type="button" class="danger-btn">Delete connection</button></form>`;
   }
@@ -557,10 +601,11 @@ function renderInspector() {
     const before=aiCardSignatures(),key=input.dataset.key;
     if(key==="aiTitle"||key==="aiPrompt"){const config=parseAICard(item);item.text=buildAICardText(key==="aiTitle"?input.value:config.title,key==="aiPrompt"?input.value:config.prompt);}
     else item[key]=input.type==="number"?Math.round(Number(input.value)):input.value;
-    if(key==="text"){const code=jdCodeFromNode(item),entry=jdEntries()[code],heading=item.text.match(/^#\s+(.+)$/m)?.[1];if(entry&&heading){const formatted=formatJDCode(code),title=(heading.startsWith(formatted)?heading.slice(formatted.length).replace(/^\s*(?:—|-)\s*/,""):heading).trim();if(title)entry.title=title;}}
+    if(key==="text"){const code=jdCodeFromNode(item),entry=jdEntries()[code],heading=item.text.match(/^#\s+(.+)$/m)?.[1];if(entry&&heading){const formatted=formatJDCode(code),title=(heading.startsWith(formatted)?heading.slice(formatted.length).replace(/^\s*(?:—|-)\s*/,""):heading).trim();if(title)entry.title=title;}const taskId=taskIdFromNode(item);if(taskId&&heading)taskStore()?.updateTask(taskId,{title:heading});}
     if (input.tagName==="SELECT" && !input.value) delete item[key];
     scheduleSave(); renderNodes(); renderEdges(); renderMinimap(); scheduleChangedAICards(before);
   }));
+  $$('[data-task-key]',panel).forEach(input=>input.addEventListener("input",()=>{const id=taskIdFromNode(item),key=input.dataset.taskKey,value=key==="priority"?(input.value?Number(input.value):null):input.value||null;if(!id)return;const patch={[key]:value};if(key==="status")patch.completedAt=value==="done"?new Date().toISOString():null;taskStore()?.updateTask(id,patch);scheduleSave();renderNodes();renderToday();}));
   const canvasTitleField=$("[data-canvas-title]",panel);if(canvasTitleField)canvasTitleField.addEventListener("input",()=>{const record=workspace.canvases[canvasTitleField.dataset.canvasTitle];if(!record)return;const title=canvasTitleField.value||"Untitled";if(record.jdCode){record.jdTitle=title;record.title=jdDisplayTitle(record.jdCode,title);const entry=jdEntries()[record.jdCode];if(entry)entry.title=title;}else record.title=title;scheduleSave();renderNodes();renderWorkspaceNavigation();});
   const openCanvas=$("[data-open-canvas]",panel);if(openCanvas)openCanvas.onclick=()=>enterSubcanvas(openCanvas.dataset.openCanvas);
   $$(".color-choice",panel).forEach(button=>button.onclick=()=>{item.color=button.dataset.color;scheduleSave();render();});
@@ -570,9 +615,9 @@ function sideOptions(value) { return ["","top","right","bottom","left"].map(s=>`
 function deleteSelection() {
   if (!selected) return;const before=aiCardSignatures();
   if (selected.kind==="node") {
-    const node=documentData.nodes.find(item=>item.id===selected.id),subcanvasId=subcanvasIdFromNode(node),jdPair=Object.entries(jdEntries()).find(([,entry])=>entry.parentCanvasId===currentCanvasId&&entry.nodeId===selected.id);
+    const node=documentData.nodes.find(item=>item.id===selected.id),subcanvasId=subcanvasIdFromNode(node),taskId=taskIdFromNode(node),jdPair=Object.entries(jdEntries()).find(([,entry])=>entry.parentCanvasId===currentCanvasId&&entry.nodeId===selected.id);
     if(subcanvasId&&!confirm(`Delete “${workspace.canvases[subcanvasId].title}” and every canvas nested inside it?`))return;
-    if(subcanvasId)deleteCanvasTree(subcanvasId);else if(jdPair)delete workspace.johnnyDecimal.entries[jdPair[0]];
+    if(subcanvasId)deleteCanvasTree(subcanvasId);else if(jdPair)delete workspace.johnnyDecimal.entries[jdPair[0]];if(taskId)taskStore()?.deleteTask(taskId);
     documentData.nodes=documentData.nodes.filter(n=>n.id!==selected.id);
     documentData.edges=(documentData.edges||[]).filter(e=>e.fromNode!==selected.id&&e.toNode!==selected.id);
   } else documentData.edges=documentData.edges.filter(e=>e.id!==selected.id);
@@ -618,7 +663,7 @@ function validWorkspaceBundle(data){
   const candidate=data?.format==="orbit-workspace"?data.workspace:data;if(candidate?.version!==1||!candidate.canvases||typeof candidate.canvases!=="object")return null;const records=Object.values(candidate.canvases);if(!records.length||!records.every(record=>record&&typeof record.id==="string"&&typeof record.title==="string"&&isCanvas(record.document)))return null;candidate.rootId=candidate.canvases[candidate.rootId]?candidate.rootId:records[0].id;candidate.activeId=candidate.canvases[candidate.activeId]?candidate.activeId:candidate.rootId;return normalizeWorkspace(candidate);
 }
 async function importCanvas(file) {
-  try {const parsed=JSON.parse(await file.text()),importedWorkspace=validWorkspaceBundle(parsed);if(importedWorkspace){if(!confirm(`Import this Orbit space with ${Object.keys(importedWorkspace.canvases).length} canvases? Your current local space will be replaced.`))return;workspace=importedWorkspace;currentCanvasId=workspace.activeId;documentData=workspace.canvases[currentCanvasId].document;camera=workspace.canvases[currentCanvasId].camera||{x:80,y:55,zoom:1};selected=null;$("#canvasTitle").value=canvasRecord().title;persistWorkspace();const store=await window.orbitLifeReady;if(store){store.importSnapshot(parsed.lifeData||{schemaVersion:1});store.syncWorkspaceIndex(workspace);}render();fitView();toast("Whole workspace and life data imported");return;}if(!isCanvas(parsed))throw new Error("Not a valid JSON Canvas document or Orbit workspace");documentData={nodes:parsed.nodes||[],edges:parsed.edges||[]};selected=null;scheduleSave();render();fitView();toast("Canvas imported");}
+  try {const parsed=JSON.parse(await file.text()),importedWorkspace=validWorkspaceBundle(parsed);if(importedWorkspace){if(!confirm(`Import this Orbit space with ${Object.keys(importedWorkspace.canvases).length} canvases? Your current local space will be replaced.`))return;workspace=importedWorkspace;currentCanvasId=workspace.activeId;documentData=workspace.canvases[currentCanvasId].document;camera=workspace.canvases[currentCanvasId].camera||{x:80,y:55,zoom:1};selected=null;$("#canvasTitle").value=canvasRecord().title;persistWorkspace();const store=await window.orbitLifeReady;if(store){store.importSnapshot(parsed.lifeData||{schemaVersion:1});store.syncWorkspaceIndex(workspace);reconcileTaskMarkers(store);}render();fitView();toast("Whole workspace and life data imported");return;}if(!isCanvas(parsed))throw new Error("Not a valid JSON Canvas document or Orbit workspace");documentData={nodes:parsed.nodes||[],edges:parsed.edges||[]};selected=null;reconcileTaskMarkers();scheduleSave();render();fitView();toast("Canvas imported");}
   catch(error){alert(`Could not import this file.\n\n${error.message}`);}
 }
 
@@ -648,7 +693,7 @@ function validateCanvasOperations(operations) {
   return {draft,themes};
 }
 function applyCanvasOperations(operations) {
-  const before=aiCardSignatures(),{draft,themes}=validateCanvasOperations(operations);documentData=draft;themes.forEach(applyCanvasTheme);
+  const before=aiCardSignatures(),{draft,themes}=validateCanvasOperations(operations);documentData=draft;themes.forEach(applyCanvasTheme);reconcileTaskMarkers();
   selected=null;shell.classList.remove("inspector-open");scheduleSave();render();updateAssistantContext();scheduleChangedAICards(before);
 }
 
@@ -801,10 +846,10 @@ async function runAICard(cardId,{manual=false}={}) {
   finally{state.running=false;const pending=state.pending;state.pending=false;aiCardRuntime.set(cardId,state);renderNodes();if(pending)scheduleAICard(cardId,250);}
 }
 
-window.orbitCanvas={getDocument:()=>clone(documentData),getWorkspace:()=>clone(workspace),getCurrentCanvas:()=>({id:currentCanvasId,title:canvasRecord().title,trail:canvasTrail().map(record=>({id:record.id,title:record.title}))}),getSummary:canvasSummary,validateOperations:validateCanvasOperations,applyOperations:applyCanvasOperations,runAICard,createSubcanvas,createJDEntry,goToJD,loadJohnnyDecimalStarter,switchCanvas,exportWorkspace};
+window.orbitCanvas={getDocument:()=>clone(documentData),getWorkspace:()=>clone(workspace),getCurrentCanvas:()=>({id:currentCanvasId,title:canvasRecord().title,trail:canvasTrail().map(record=>({id:record.id,title:record.title}))}),getSummary:canvasSummary,validateOperations:validateCanvasOperations,applyOperations:applyCanvasOperations,runAICard,createSubcanvas,createJDEntry,createTask,goToJD,loadJohnnyDecimalStarter,setView:setAppView,switchCanvas,exportWorkspace};
 applyCanvasTheme(localStorage.getItem("orbit-canvas-theme")||"default");updateProviderUI();
 
-$$("[data-add]").forEach(button=>button.onclick=()=>button.dataset.add==="ai-note"?openAINoteDialog():addNode(button.dataset.add));
+$$("[data-add]").forEach(button=>button.onclick=()=>button.dataset.add==="ai-note"?openAINoteDialog():addNode(button.dataset.add));$$('[data-app-view]').forEach(button=>button.onclick=()=>setAppView(button.dataset.appView));
 $("#newGroup").onclick=()=>addNode("group");$("#newCanvas").onclick=()=>createSubcanvas();$("#johnnyDecimalState").onclick=openJohnnyDecimalDialog;
 $$(".nav-item[data-filter]").forEach(button=>button.onclick=()=>{activeFilter=button.dataset.filter;$$(".nav-item[data-filter]").forEach(b=>b.classList.toggle("active",b===button));renderNodes();renderEdges();});
 $$(".tool").forEach(button=>button.onclick=()=>{const tool=button.dataset.tool;if(tool==="note")setTool("note");else setTool(tool);});
@@ -815,6 +860,7 @@ $("#assistantButton").onclick=()=>setAssistantOpen(!$("#aiPanel").classList.cont
 $("#aiForm").onsubmit=event=>{event.preventDefault();const input=$("#aiPrompt"),prompt=input.value;input.value="";runAssistant(prompt);};
 $("#aiPrompt").onkeydown=event=>{if(event.key==="Enter"&&!event.shiftKey){event.preventDefault();$("#aiForm").requestSubmit();}};
 $$(".ai-suggestions button").forEach(button=>button.onclick=()=>runAssistant(button.textContent));
+$("#newTodayTask").onclick=()=>openTaskDialog({today:true});$("#closeTaskDialog").onclick=$("#cancelTaskDialog").onclick=()=>$("#taskDialog").close();$("#taskForm").onsubmit=async event=>{event.preventDefault();const result=$("#taskResult"),button=$("#createTaskButton");try{if(!event.currentTarget.reportValidity())return;button.disabled=true;await createTask({title:$("#taskTitle").value,notes:$("#taskNotes").value,canvasId:$("#taskCanvas").value,status:$("#taskStatus").value,scheduledOn:$("#taskScheduledOn").value,dueOn:$("#taskDueOn").value,priority:$("#taskPriority").value});$("#taskDialog").close();}catch(error){result.className="settings-test error";result.textContent=error.message;}finally{button.disabled=false;}};$("#todayQuickAdd").onsubmit=async event=>{event.preventDefault();const input=$("#todayTaskTitle"),title=input.value.trim();if(!title)return;const button=$("button",event.currentTarget);button.disabled=true;try{await createTask({title,status:"scheduled",scheduledOn:localDateISO(),canvasId:currentCanvasId});input.value="";renderToday();}catch(error){toast(error.message);}finally{button.disabled=false;}};
 $("#closeJohnnyDecimal").onclick=$("#cancelJohnnyDecimal").onclick=()=>$("#johnnyDecimalDialog").close();$("#loadJDStarter").onclick=loadJohnnyDecimalStarter;$("#jdParent").onchange=updateJDDialog;$("#goToJD").onclick=()=>goToJD($("#jdLookup").value);$("#jdLookup").onkeydown=event=>{if(event.key==="Enter"){event.preventDefault();goToJD(event.currentTarget.value);}};$("#exportJDWorkspace").onclick=exportWorkspace;$("#johnnyDecimalForm").onsubmit=event=>{event.preventDefault();const result=$("#jdCreateResult");try{if(!event.currentTarget.reportValidity())return;createJDEntry({parentCanvasId:$("#jdParent").value,code:$("#jdCode").value,title:$("#jdTitle").value,itemFormat:$("#jdItemFormat").value});}catch(error){result.className="settings-test error";result.textContent=error.message;}};
 $("#closeAINote").onclick=$("#cancelAINote").onclick=()=>$("#aiNoteDialog").close();
 $("#aiNoteForm").onsubmit=event=>{event.preventDefault();const prompt=$("#aiNotePrompt").value.trim();if(prompt)createAINote(prompt);};
@@ -841,6 +887,7 @@ window.addEventListener("keydown",event=>{
 window.addEventListener("keyup",event=>{if(event.code==="Space")spaceDown=false;});
 window.addEventListener("resize",()=>{applyCamera();});
 window.addEventListener("beforeunload",persistWorkspace);
+window.addEventListener("orbit:life-store-ready",refreshLifeViews);
 
 render();
 setTimeout(fitView,50);
