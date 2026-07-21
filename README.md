@@ -16,6 +16,7 @@ A small, standalone proof of concept for a life-management app whose primary int
 - Inspector for content, geometry, colors, and edge routing
 - Sandboxed HTML/CSS/Three.js cards represented as standard file nodes
 - Canvas-aware copilot with local tools or a client-side OpenAI-compatible provider
+- Prompt-first AI notes that generate Markdown directly onto the canvas
 - Reactive AI operator cards: connected nodes become inputs and generated notes refresh when inputs change
 - Library filters
 - Browser-local persistence
@@ -56,6 +57,10 @@ API key:      your Mistral API key
 ```
 
 The static app calls the provider directly with `fetch()` using its OpenAI-compatible `/chat/completions` endpoint. The model receives the current canvas and proposes typed operations; changes are validated and require confirmation before being applied.
+
+### AI notes
+
+Select **AI note** in the sidebar. Orbit asks for your prompt before creating anything, sends it directly to the configured provider, and places the Markdown response near the center of the current view as a standard JSON Canvas text node.
 
 ### AI operator cards
 

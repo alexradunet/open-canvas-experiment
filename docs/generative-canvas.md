@@ -61,6 +61,10 @@ window.orbitCanvas.applyOperations(operations)
 
 All operations are allowlisted and the resulting document is validated before commit.
 
+## Prompt-first AI notes
+
+An AI note is a one-shot generation flow. Orbit first opens a native `<dialog>` for the question, calls the configured provider only after submission, and adds the resulting Markdown as an ordinary JSON Canvas text node. No placeholder node is created when the dialog is cancelled or the request fails.
+
 ## Reactive AI operator cards
 
 An AI operator remains a standard JSON Canvas text node. Orbit recognizes a portable Markdown marker rather than introducing a custom node type:

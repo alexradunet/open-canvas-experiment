@@ -555,6 +555,16 @@ function scheduleChangedAICards(before) {
   const after=aiCardSignatures();for(const [id,signature] of after){if(before.get(id)!==signature&&(before.has(id)||inputNodesForAICard(id).length))scheduleAICard(id);}
 }
 function providerMessageContent(content){if(Array.isArray(content))content=content.map(part=>part.text||part.content||"").join("");if(typeof content!=="string"||!content.trim())throw new Error("Provider returned an empty note");return content.trim().replace(/^```(?:markdown|md)?\s*/i,"").replace(/\s*```$/,"").replaceAll(AI_CARD_MARKER,"").trim();}
+function openAINoteDialog(){const dialog=$("#aiNoteDialog");$("#aiNoteResult").textContent="";$("#aiNoteResult").className="settings-test";dialog.showModal();setTimeout(()=>$("#aiNotePrompt").focus(),50);}
+async function createAINote(prompt){
+  if(!aiSettings.apiKey){$("#aiNoteDialog").close();setAssistantOpen(true);openAISettings();toast("Configure an AI provider, then add the AI note again");return;}
+  const dialog=$("#aiNoteDialog"),button=$("#generateAINote"),result=$("#aiNoteResult");dialog.classList.add("generating");button.disabled=true;result.className="settings-test";result.textContent=`Asking ${aiSettings.model}…`;
+  try{
+    const response=await providerFetch(aiSettings,"/chat/completions",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({model:aiSettings.model,messages:[{role:"system",content:"Create one clear, useful Markdown note that answers the user's prompt. Return only the note Markdown without code fences, commentary, HTML, or scripts. Give the note a concise level-one heading."},{role:"user",content:prompt}],temperature:.4,max_tokens:2200})}),body=await response.json();let generated=providerMessageContent(body.choices?.[0]?.message?.content);if(!/^#\s/m.test(generated))generated=`# AI note\n\n${generated}`;
+    const box=canvas.getBoundingClientRect(),center=canvasPoint(box.left+box.width/2,box.top+box.height/2),node={id:uid("node"),type:"text",x:Math.round(center.x-190),y:Math.round(center.y-130),width:380,height:Math.min(480,Math.max(240,180+Math.round(generated.length/12))),color:"5",text:generated};documentData.nodes.push(node);selected={kind:"node",id:node.id};shell.classList.add("inspector-open");scheduleSave();render();dialog.close();$("#aiNotePrompt").value="";toast("AI note added");
+  }catch(error){result.className="settings-test error";result.textContent=error.message;}
+  finally{dialog.classList.remove("generating");button.disabled=false;}
+}
 async function runAICard(cardId,{manual=false}={}) {
   const card=documentData.nodes.find(node=>node.id===cardId&&isAICard(node));if(!card)return;const state=aiCardRuntime.get(cardId)||{};clearTimeout(state.timer);
   if(state.running){state.pending=true;aiCardRuntime.set(cardId,state);return;}if(!aiSettings.apiKey){state.status="Configure an AI provider";aiCardRuntime.set(cardId,state);renderNodes();setAssistantOpen(true);openAISettings();return;}
@@ -575,7 +585,7 @@ async function runAICard(cardId,{manual=false}={}) {
 window.orbitCanvas={getDocument:()=>clone(documentData),getSummary:canvasSummary,validateOperations:validateCanvasOperations,applyOperations:applyCanvasOperations,runAICard};
 applyCanvasTheme(localStorage.getItem("orbit-canvas-theme")||"default");updateProviderUI();
 
-$$("[data-add]").forEach(button=>button.onclick=()=>addNode(button.dataset.add));
+$$("[data-add]").forEach(button=>button.onclick=()=>button.dataset.add==="ai-note"?openAINoteDialog():addNode(button.dataset.add));
 $("#newGroup").onclick=()=>addNode("group");
 $$(".nav-item[data-filter]").forEach(button=>button.onclick=()=>{activeFilter=button.dataset.filter;$$(".nav-item[data-filter]").forEach(b=>b.classList.toggle("active",b===button));renderNodes();renderEdges();});
 $$(".tool").forEach(button=>button.onclick=()=>{const tool=button.dataset.tool;if(tool==="note")setTool("note");else setTool(tool);});
@@ -586,6 +596,8 @@ $("#assistantButton").onclick=()=>setAssistantOpen(!$("#aiPanel").classList.cont
 $("#aiForm").onsubmit=event=>{event.preventDefault();const input=$("#aiPrompt"),prompt=input.value;input.value="";runAssistant(prompt);};
 $("#aiPrompt").onkeydown=event=>{if(event.key==="Enter"&&!event.shiftKey){event.preventDefault();$("#aiForm").requestSubmit();}};
 $$(".ai-suggestions button").forEach(button=>button.onclick=()=>runAssistant(button.textContent));
+$("#closeAINote").onclick=$("#cancelAINote").onclick=()=>$("#aiNoteDialog").close();
+$("#aiNoteForm").onsubmit=event=>{event.preventDefault();const prompt=$("#aiNotePrompt").value.trim();if(prompt)createAINote(prompt);};
 $("#closeAISettings").onclick=$("#cancelAISettings").onclick=()=>$("#aiSettingsDialog").close();
 $("#toggleAIKey").onclick=()=>{const input=$("#aiAPIKey"),show=input.type==="password";input.type=show?"text":"password";$("#toggleAIKey").textContent=show?"Hide":"Show";};
 $("#aiSettingsForm").onsubmit=event=>{event.preventDefault();if(!event.currentTarget.reportValidity())return;try{const settings=settingsFromForm();if(!settings.model||!settings.apiKey)throw new Error("Model and API key are required");persistAISettings(settings);$("#aiSettingsDialog").close();toast(`Connected to ${settings.model}`);}catch(error){setSettingsResult(error.message,"error");}};
