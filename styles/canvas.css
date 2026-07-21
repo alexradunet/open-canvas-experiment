@@ -99,23 +99,29 @@
 
   .selection-bearing {
     position: absolute;
-    inset: -15px;
+    inset: -7px;
     display: none;
     pointer-events: none;
     z-index: 7;
   }
   .canvas-node.selected:not(.group-node) > .selection-bearing { display: block; }
+  /* Cartographic registration brackets: gold on the TL/BR corners… */
   .selection-bearing i {
     position: absolute;
-    inset: 3px -2px;
-    border: 1px solid var(--balaur-action-primary);
-    border-radius: 50%;
-    transform: rotate(-7deg);
+    inset: 0;
+    background:
+      linear-gradient(var(--balaur-action-primary) 0 0) 0 0 / 14px 2px no-repeat,
+      linear-gradient(var(--balaur-action-primary) 0 0) 0 0 / 2px 14px no-repeat,
+      linear-gradient(var(--balaur-action-primary) 0 0) 100% 100% / 14px 2px no-repeat,
+      linear-gradient(var(--balaur-action-primary) 0 0) 100% 100% / 2px 14px no-repeat;
   }
+  /* …river teal on the TR/BL corners, so the frame reads as two-tone bearings. */
   .selection-bearing i + i {
-    inset: -2px 4px;
-    border-color: var(--balaur-action-assistant);
-    transform: rotate(9deg);
+    background:
+      linear-gradient(var(--balaur-action-assistant) 0 0) 100% 0 / 14px 2px no-repeat,
+      linear-gradient(var(--balaur-action-assistant) 0 0) 100% 0 / 2px 14px no-repeat,
+      linear-gradient(var(--balaur-action-assistant) 0 0) 0 100% / 14px 2px no-repeat,
+      linear-gradient(var(--balaur-action-assistant) 0 0) 0 100% / 2px 14px no-repeat;
   }
 
   .connection-handles {
@@ -125,9 +131,12 @@
     opacity: 0;
     pointer-events: none;
   }
-  .canvas-node:hover .connection-handles,
-  .canvas-node.selected .connection-handles,
-  .canvas-node:focus-within .connection-handles,
+  /* Connection dots are a connect affordance, not a selection marker: show them
+     on an unselected card (hover to grab an edge) or while the connect tool is
+     active, but never on a card that is merely selected. */
+  .canvas-node:not(.selected):hover .connection-handles,
+  .canvas-node:not(.selected):focus-within .connection-handles,
+  .canvas.tool-connect .canvas-node:hover .connection-handles,
   .canvas-node.connection-drag-source .connection-handles { opacity: 1; }
   .connection-handle {
     position: absolute;
@@ -151,7 +160,7 @@
 
   .node-accent {
     position: absolute;
-    inset: 11px 11px auto auto;
+    inset: 10px 11px auto auto;
     width: 9px;
     height: 9px;
     border: 2px solid var(--balaur-color-ink-900);
@@ -159,17 +168,26 @@
     background: var(--balaur-border-default);
     z-index: 3;
   }
-  .node-content { height: 100%; overflow: hidden; padding: 17px 18px 14px; }
+  /* Every content card shares the live-widget chrome: a title-bar header
+     (.node-kicker) above a padded body (.node-body). */
+  .node-content { display: flex; flex-direction: column; height: 100%; overflow: hidden; padding: 0; }
   .node-kicker {
+    flex: 0 0 30px;
     display: flex;
     align-items: center;
     gap: 6px;
-    margin-block-end: 10px;
+    height: 30px;
+    margin: 0;
+    border-block-end: 1px solid var(--balaur-border-default);
+    padding-inline: 13px;
+    background: var(--balaur-surface-parchment-raised);
+    background: color-mix(in oklab, currentColor 9%, var(--node-surface));
     color: var(--node-muted);
     font: 500 8px var(--balaur-font-mono);
     letter-spacing: .12em;
     text-transform: uppercase;
   }
+  .node-body { flex: 1 1 auto; min-height: 0; overflow: hidden; padding: 12px 14px 14px; }
   .node-kicker::before {
     content: "";
     width: 5px;
@@ -231,7 +249,7 @@
 
   .canvas-node.task-card .node-accent,
   .canvas-node.task-card .node-kicker { color: var(--balaur-action-primary); }
-  .canvas-node.task-card .node-content { padding-block-end: 42px; }
+  .canvas-node.task-card .node-body { padding-block-end: 40px; }
   .canvas-node.task-complete { opacity: .62; }
   .canvas-node.task-complete h2 { text-decoration: line-through; }
   .task-node-footer {
@@ -269,6 +287,7 @@
     background: linear-gradient(90deg, var(--balaur-action-assistant), var(--balaur-action-primary), var(--balaur-action-assistant));
     background-size: 200% 100%;
   }
+  .canvas-node.ai-card .node-body { padding-block-end: 44px; }
   .ai-card-title { margin: 0; font-size: 14px; }
   .ai-card-prompt {
     display: -webkit-box;
@@ -337,7 +356,7 @@
     display: grid;
     place-items: center;
     height: 90px;
-    margin: -5px -6px 10px;
+    margin: 0 0 10px;
     border: 1px solid var(--balaur-border-default);
     background: rgb(128 100 56 / 14%);
     color: var(--node-muted);
@@ -346,7 +365,7 @@
   .canvas-node.subcanvas-node { --node-surface: #cfb878; }
   .subcanvas-node .node-accent,
   .subcanvas-node .node-kicker { color: var(--balaur-action-assistant); }
-  .subcanvas-node .node-content { padding: 17px; }
+  .subcanvas-node .node-body { padding: 13px 15px 15px; }
   .subcanvas-node h3 { font-size: 17px; }
   .subcanvas-node .node-content > p { margin-block-start: 3px; }
   .portal-preview {
@@ -389,18 +408,16 @@
   .portal-actions span { color: var(--node-muted); font: 8px var(--balaur-font-mono); }
 
   .canvas-node.html-widget { --node-surface: var(--balaur-surface-oak-raised); }
-  .canvas-node.html-widget .node-content { display: flex; flex-direction: column; padding: 0; }
   .canvas-node.html-widget .node-kicker {
-    flex: 0 0 35px;
+    flex-basis: 35px;
     height: 35px;
-    margin: 0;
-    border-block-end: 1px solid var(--balaur-border-default);
     padding-inline: 14px;
     background: var(--balaur-surface-oak);
     color: var(--balaur-content-on-dark-muted);
     cursor: grab;
   }
-  .widget-frame { display: block; width: 100%; height: calc(100% - 35px); border: 0; background: #0c1016; }
+  .canvas-node.html-widget .node-body { padding: 0; }
+  .widget-frame { display: block; width: 100%; height: 100%; border: 0; background: #0c1016; }
   .widget-shield { display: none; position: absolute; inset: 35px 0 0; z-index: 2; }
   .canvas-node.html-widget.selected:active .widget-shield { display: block; }
   .node-link {

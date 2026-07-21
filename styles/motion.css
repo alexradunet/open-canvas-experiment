@@ -54,11 +54,8 @@
   .canvas-node.ai-card.running .node-accent {
     animation: ai-run var(--balaur-duration-process) var(--balaur-ease-linear) infinite;
   }
-  .selection-entering .selection-bearing i {
-    animation: balaur-bearing-primary var(--balaur-duration-selection) var(--balaur-ease-enter) both;
-  }
-  .selection-entering .selection-bearing i + i {
-    animation-name: balaur-bearing-secondary;
+  .selection-entering .selection-bearing {
+    animation: balaur-bearing-enter var(--balaur-duration-selection) var(--balaur-ease-enter) both;
   }
   .toast {
     transition:
@@ -103,13 +100,9 @@
   @keyframes connection-flow { to { stroke-dashoffset: -10; } }
   @keyframes ai-run { to { background-position: -200% 0; } }
   @keyframes thinking { to { background-position: 6px 0; } }
-  @keyframes balaur-bearing-primary {
-    from { opacity: 0; transform: rotate(-7deg) scale(.94); }
-    to { opacity: 1; transform: rotate(-7deg) scale(1); }
-  }
-  @keyframes balaur-bearing-secondary {
-    from { opacity: 0; transform: rotate(9deg) scale(.94); }
-    to { opacity: 1; transform: rotate(9deg) scale(1); }
+  @keyframes balaur-bearing-enter {
+    from { opacity: 0; transform: scale(.97); }
+    to { opacity: 1; transform: scale(1); }
   }
   @keyframes portal-out {
     to { opacity: 0; transform: scale(calc(1 + var(--balaur-scale-travel))); filter: blur(var(--balaur-distance-blur)); }

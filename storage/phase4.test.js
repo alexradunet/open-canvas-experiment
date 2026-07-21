@@ -37,9 +37,10 @@ function legacyWorkspace() {
         camera: { x: 10, y: 20, zoom: 1 },
       },
       "canvas-planning": {
-        id: "canvas-planning", title: "Planning", parentId: "canvas-root", portalNodeId: "portal-1", path: "canvases/planning.canvas",
+        id: "canvas-planning", title: "11 Planning", parentId: "canvas-root", portalNodeId: "portal-1", path: "canvases/planning.canvas",
         document: doc(textNode("p1", "# Planning")),
         camera: { x: 0, y: 0, zoom: 0.5 },
+        jdCode: "11", jdTitle: "Planning", jdKind: "category",
       },
     },
   };
@@ -65,6 +66,10 @@ test("toSidecar strips documents and stamps format/version/paths", () => {
   }
   assert.equal(sidecar.canvases["canvas-root"].title, "Life OS");
   assert.deepEqual(sidecar.canvases["canvas-planning"].camera, { x: 0, y: 0, zoom: 0.5 });
+  assert.equal(sidecar.canvases["canvas-planning"].jdCode, "11");
+  assert.equal(sidecar.canvases["canvas-planning"].jdTitle, "Planning");
+  assert.equal(sidecar.canvases["canvas-planning"].jdKind, "category");
+  assert.ok(!("jdCode" in sidecar.canvases["canvas-root"]), "records without JD metadata stay plain");
 });
 
 test("parseSidecar round-trips and rejects malformed sidecars", () => {
@@ -98,8 +103,11 @@ test("migrate then load reconstructs an equivalent workspace", async () => {
   assert.equal(ws.rootId, "canvas-root");
   assert.equal(ws.activeId, "canvas-root");
   assert.equal(ws.canvases["canvas-root"].title, "Life OS");
-  assert.equal(ws.canvases["canvas-planning"].title, "Planning");
+  assert.equal(ws.canvases["canvas-planning"].title, "11 Planning");
   assert.equal(ws.canvases["canvas-planning"].parentId, "canvas-root");
+  assert.equal(ws.canvases["canvas-planning"].jdCode, "11");
+  assert.equal(ws.canvases["canvas-planning"].jdTitle, "Planning");
+  assert.equal(ws.canvases["canvas-planning"].jdKind, "category");
   assert.deepEqual(ws.canvases["canvas-root"].document, original.canvases["canvas-root"].document);
   assert.deepEqual(ws.canvases["canvas-planning"].document, original.canvases["canvas-planning"].document);
   assert.deepEqual(ws.johnnyDecimal, original.johnnyDecimal);

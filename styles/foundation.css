@@ -33,6 +33,8 @@
       color: CanvasText;
     }
     :where(.canvas-node.selected, .connection-handle, .task-check) { border-color: Highlight; }
-    :where(.selection-bearing i, .edge.selected .edge-line) { border-color: Highlight; stroke: Highlight; }
+    .edge.selected .edge-line { stroke: Highlight; }
+    .selection-bearing { border: 2px solid Highlight; }
+    .selection-bearing i { display: none; }
   }
 }

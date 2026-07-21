@@ -49,6 +49,7 @@ export function toSidecar(workspace) {
     };
     if (record.jdCode) entry.jdCode = record.jdCode;
     if (record.jdTitle) entry.jdTitle = record.jdTitle;
+    if (record.jdKind) entry.jdKind = record.jdKind;
     canvases[record.id] = entry;
   }
   return {

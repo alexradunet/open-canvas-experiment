@@ -27,7 +27,7 @@ Texture is CSS-only and subordinate to text contrast. `prefers-reduced-transpare
 
 ## Signature elements
 
-Selection uses a cartographic bearing: a double line with four rotated gold marks. The single familiar control uses the Balaur glyph and opens the assistant; there is no duplicate assistant launcher. These signatures carry identity while ordinary controls stay restrained.
+Selection turns the card's own border candle gold and frames it with four corner registration brackets set just outside the card — gold on the top-left/bottom-right, river teal on the top-right/bottom-left. There is no enclosing ring and no circular handles on a selected card; the connection dots belong to the connect affordance and appear only on an unselected card or while the connect tool is active. The single familiar control uses the Balaur glyph and opens the assistant; there is no duplicate assistant launcher. These signatures carry identity while ordinary controls stay restrained.
 
 ## CSS organization
 
@@ -53,7 +53,7 @@ Motion explains state, hierarchy, and spatial travel:
 - press and focus use short tokenized feedback;
 - library, inspector, assistant, and dialog surfaces use panel travel;
 - nested-canvas navigation uses a document View Transition when supported;
-- selection bearing marks animate once when selection enters;
+- the selection frame animates once when selection enters;
 - edges and AI activity animate only while processing.
 
 All duration, easing, distance, and scale values come from `styles/tokens.css`; `styles/motion.css` owns transitions and keyframes. `prefers-reduced-motion` sets semantic durations and travel distances to zero, disables continuous animation, restores automatic scrolling, and bypasses the View Transition API. Core behavior never depends on a progressive motion feature.

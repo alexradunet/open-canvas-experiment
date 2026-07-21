@@ -445,22 +445,22 @@ function renderNodes() {
     } else if (node.type === "text") {
       if(isAICard(node)){
         const config=parseAICard(node),inputs=inputNodesForAICard(node.id),runtime=aiCardRuntime.get(node.id)||{status:"Ready"};element.classList.add("ai-card");element.classList.toggle("running",runtime.running===true);
-        content.innerHTML=`<div class="node-kicker">AI OPERATOR</div><h3 class="ai-card-title">${escapeHTML(config.title)}</h3><p class="ai-card-prompt">${escapeHTML(config.prompt)}</p><div class="ai-inputs">${inputs.length?inputs.map(input=>`<span class="ai-input-chip">← ${escapeHTML(nodeTitle(input))}</span>`).join(""):"<span class=\"ai-input-chip\">No inputs connected</span>"}</div><div class="ai-run-row"><span class="ai-run-status">${escapeHTML(runtime.status||"Ready")}</span><button class="ai-run-button" data-ai-run ${runtime.running?"disabled":""}>${runtime.running?"Running…":"Run now"}</button></div>`;
-      } else if(taskIdFromNode(node)){const taskId=taskIdFromNode(node),task=taskStore()?.task(taskId),status=task?.status||"inbox";element.classList.add("task-card");element.classList.toggle("task-complete",status==="done");element.dataset.taskId=taskId;content.innerHTML=`<div class="node-kicker">TASK · ${escapeHTML(status.toUpperCase())}</div>${markdownToHTML(node.text)}<div class="task-node-footer"><span>${task?.scheduledOn?`Plan ${escapeHTML(task.scheduledOn)}`:task?.dueOn?`Due ${escapeHTML(task.dueOn)}`:"Not scheduled"}</span><button type="button" data-node-complete-task ${status==="done"?"disabled":""}>${status==="done"?"Completed":"Mark done"}</button></div>`;
-      } else {const jdCode=jdCodeFromNode(node);content.innerHTML = `<div class="node-kicker">${jdCode?`ITEM · ${escapeHTML(formatJDCode(jdCode))}`:textMeta(node)}</div>${markdownToHTML(node.text)}`;}
+        content.innerHTML=`<div class="node-kicker">AI OPERATOR</div><div class="node-body"><h3 class="ai-card-title">${escapeHTML(config.title)}</h3><p class="ai-card-prompt">${escapeHTML(config.prompt)}</p><div class="ai-inputs">${inputs.length?inputs.map(input=>`<span class="ai-input-chip">← ${escapeHTML(nodeTitle(input))}</span>`).join(""):"<span class=\"ai-input-chip\">No inputs connected</span>"}</div></div><div class="ai-run-row"><span class="ai-run-status">${escapeHTML(runtime.status||"Ready")}</span><button class="ai-run-button" data-ai-run ${runtime.running?"disabled":""}>${runtime.running?"Running…":"Run now"}</button></div>`;
+      } else if(taskIdFromNode(node)){const taskId=taskIdFromNode(node),task=taskStore()?.task(taskId),status=task?.status||"inbox";element.classList.add("task-card");element.classList.toggle("task-complete",status==="done");element.dataset.taskId=taskId;content.innerHTML=`<div class="node-kicker">TASK · ${escapeHTML(status.toUpperCase())}</div><div class="node-body">${markdownToHTML(node.text)}</div><div class="task-node-footer"><span>${task?.scheduledOn?`Plan ${escapeHTML(task.scheduledOn)}`:task?.dueOn?`Due ${escapeHTML(task.dueOn)}`:"Not scheduled"}</span><button type="button" data-node-complete-task ${status==="done"?"disabled":""}>${status==="done"?"Completed":"Mark done"}</button></div>`;
+      } else {const jdCode=jdCodeFromNode(node);content.innerHTML = `<div class="node-kicker">${jdCode?`ITEM · ${escapeHTML(formatJDCode(jdCode))}`:textMeta(node)}</div><div class="node-body">${markdownToHTML(node.text)}</div>`;}
     } else if (node.type === "link") {
       let linkTitle = "Saved link";
       try { linkTitle = new URL(node.url).hostname.replace(/^www\./, ""); } catch (_) {}
-      content.innerHTML = `<div class="node-kicker">LINK</div><h3>${escapeHTML(linkTitle)}</h3><p>Open this resource in a new tab.</p><a class="node-link" href="${safeURL(node.url)}" target="_blank" rel="noreferrer">${escapeHTML(node.url)} ↗</a>`;
+      content.innerHTML = `<div class="node-kicker">LINK</div><div class="node-body"><h3>${escapeHTML(linkTitle)}</h3><p>Open this resource in a new tab.</p><a class="node-link" href="${safeURL(node.url)}" target="_blank" rel="noreferrer">${escapeHTML(node.url)} ↗</a></div>`;
     } else if (node.type === "file") {
       const subcanvasId=subcanvasIdFromNode(node),subcanvas=subcanvasId&&workspace.canvases[subcanvasId];
       if(subcanvas){
         const children=Object.values(workspace.canvases).filter(record=>record.parentId===subcanvasId).length;element.classList.add("subcanvas-node");element.dataset.subcanvasId=subcanvasId;
-        content.innerHTML=`<div class="node-kicker">${subcanvas.jdCode?`${escapeHTML(subcanvas.jdKind.toUpperCase())} · ${escapeHTML(formatJDCode(subcanvas.jdCode))}`:"SUB-CANVAS · ZOOM PORTAL"}</div><h3>${escapeHTML(subcanvas.jdTitle||subcanvas.title)}</h3><p>${subcanvas.document.nodes.length} item${subcanvas.document.nodes.length===1?"":"s"}${children?` · ${children} nested`:""}</p><div class="portal-preview">${portalPreview(subcanvas.document)}</div><div class="portal-actions"><span>Double-click or zoom to 220%</span><button type="button" data-open-subcanvas>Open ↘</button></div>`;
+        content.innerHTML=`<div class="node-kicker">${subcanvas.jdCode?`${escapeHTML((subcanvas.jdKind||jdEntries()[subcanvas.jdCode]?.kind||"canvas").toUpperCase())} · ${escapeHTML(formatJDCode(subcanvas.jdCode))}`:"SUB-CANVAS · ZOOM PORTAL"}</div><div class="node-body"><h3>${escapeHTML(subcanvas.jdTitle||subcanvas.title)}</h3><p>${subcanvas.document.nodes.length} item${subcanvas.document.nodes.length===1?"":"s"}${children?` · ${children} nested`:""}</p><div class="portal-preview">${portalPreview(subcanvas.document)}</div><div class="portal-actions"><span>Double-click or zoom to 220%</span><button type="button" data-open-subcanvas>Open ↘</button></div></div>`;
       } else if (/\.html?$/i.test(node.file)) {
         element.classList.add("html-widget");
-        content.innerHTML = `<div class="node-kicker">LIVE HTML · SANDBOXED</div><iframe class="widget-frame" src="${safeFileURL(node.file)}" sandbox="allow-scripts" loading="lazy" referrerpolicy="no-referrer" title="${escapeHTML(node.file.split("/").pop())}"></iframe><div class="widget-shield"></div>`;
-      } else content.innerHTML = `<div class="node-kicker">FILE</div><div class="file-preview">▧</div><h3>${escapeHTML(node.file.split("/").pop())}</h3><p>${escapeHTML(node.subpath || node.file)}</p>`;
+        content.innerHTML = `<div class="node-kicker">LIVE HTML · SANDBOXED</div><div class="node-body"><iframe class="widget-frame" src="${safeFileURL(node.file)}" sandbox="allow-scripts" loading="lazy" referrerpolicy="no-referrer" title="${escapeHTML(node.file.split("/").pop())}"></iframe></div><div class="widget-shield"></div>`;
+      } else content.innerHTML = `<div class="node-kicker">FILE</div><div class="node-body"><div class="file-preview">▧</div><h3>${escapeHTML(node.file.split("/").pop())}</h3><p>${escapeHTML(node.subpath || node.file)}</p></div>`;
     }
     element.addEventListener("pointerdown", event => nodePointerDown(event, node));
     $$("[data-connection-side]",element).forEach(handle=>{handle.addEventListener("pointerdown",event=>startConnectionDrag(event,node,handle.dataset.connectionSide));handle.addEventListener("keydown",event=>{if(event.key==="Enter"||event.key===" "){event.preventDefault();event.stopPropagation();connectSource=node.id;connectSourceSide=handle.dataset.connectionSide;setTool("connect");toast("Choose a destination node");}});});
@@ -561,6 +561,18 @@ function canvasPoint(clientX,clientY) {
   const box=canvas.getBoundingClientRect();
   return { x:(clientX-box.left-camera.x)/camera.zoom, y:(clientY-box.top-camera.y)/camera.zoom };
 }
+// Geometry hit-test: the node (if any) whose rect contains a screen point, topmost
+// first. Unlike event.target / elementFromPoint this is immune to the node layer
+// being rebuilt mid-click, so it reliably tells us a pointer is over a card even
+// when the browser retargets the event to the background. Filtered (dimmed,
+// pointer-events:none) nodes are skipped to match their non-interactive state.
+function nodeAtClientPoint(clientX,clientY){
+  const p=canvasPoint(clientX,clientY),nodes=documentData.nodes||[];
+  for(let i=nodes.length-1;i>=0;i--){const n=nodes[i];
+    if(activeFilter!=="all"&&n.type!=="group"&&n.color!==activeFilter)continue;
+    if(p.x>=n.x&&p.x<=n.x+n.width&&p.y>=n.y&&p.y<=n.y+n.height)return n;}
+  return null;
+}
 function nodePointerDown(event,node) {
   if (event.button !== 0 || event.target.closest("a,button")) return;
   event.stopPropagation();
@@ -602,12 +614,20 @@ canvas.addEventListener("pointerdown", event => {
     window.addEventListener("pointermove",move);window.addEventListener("pointerup",up,{once:true}); return;
   }
   if (event.target === canvas || event.target === world || event.target === nodeLayer) {
+    // Re-rendering on selection can retarget events to the background layer;
+    // geometry-test so a click that lands on a card never deselects or creates.
+    if (nodeAtClientPoint(event.clientX,event.clientY)) return;
     selected=null;connectSource=null;connectSourceSide=null;shell.classList.remove("inspector-open");render();
     if (currentTool === "note") { const p=canvasPoint(event.clientX,event.clientY); addNode("note",p); setTool("select"); }
   }
 });
 canvas.addEventListener("dblclick", event => {
-  if (event.target===canvas || event.target===world || event.target===nodeLayer) addNode("note",canvasPoint(event.clientX,event.clientY));
+  if (event.target.closest?.(".canvas-tools,.zoom-tools,.minimap,.edges")) return;
+  // Create a note on empty canvas only. The geometry test (not event.target) is
+  // authoritative so a double click over a card never spawns a note on top of it,
+  // even when a mid-click re-render retargets the event to the background layer.
+  if (nodeAtClientPoint(event.clientX,event.clientY)) return;
+  addNode("note",canvasPoint(event.clientX,event.clientY));
 });
 canvas.addEventListener("wheel", event => {
   event.preventDefault();
@@ -626,7 +646,7 @@ function selectItem(kind,id) {
 function setTool(tool) {
   currentTool=tool;if(tool!=="connect"){connectSource=null;connectSourceSide=null;}
   $$(".tool").forEach(b=>b.classList.toggle("active",b.dataset.tool===tool));
-  canvas.classList.toggle("tool-pan",tool==="pan"); renderNodes();
+  canvas.classList.toggle("tool-pan",tool==="pan"); canvas.classList.toggle("tool-connect",tool==="connect"); renderNodes();
 }
 
 function addNode(kind, point) {

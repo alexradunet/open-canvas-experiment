@@ -488,7 +488,15 @@ node --check sw.js
 git diff --check
 ```
 
-Then perform browser-level checks appropriate to the change. Use a fresh temporary browser profile for first-run behavior and retain the same profile for reload/persistence tests. Headless Chrome with a temporary `--user-data-dir` and DevTools Protocol is acceptable; manual testing is also acceptable.
+Then perform browser-level checks appropriate to the change. **The default way to check the application is the project `browser-check` skill** at `.pi/skills/browser-check/` — a dependency-free headless-Chrome-over-CDP driver that runs the baseline smoke suite below automatically (no WebDriver, no npm install). With the app served on `4173`:
+
+```bash
+node .pi/skills/browser-check/scripts/browser-check.mjs smoke --offline
+```
+
+It boots a fresh profile and asserts: no uncaught console errors or failed assets; every document node renders; the sidebar reports `SQLite <version> · local`; clicking a card selects it and shows the corner-bracket selection frame (no circles); double-clicking *inside* a card and the note tool *on* a card create nothing; double-clicking empty background still creates a note; the live document stays valid JSON Canvas 1.0; a controlled reload preserves the workspace; and `--offline` confirms the Service Worker renders the shell from cache. Use `--profile <dir>` to reuse a profile across runs (first-run vs existing-profile / migration testing), `--width`/`--height` for narrow-shell checks, and `--screenshot <dir>` to dump a PNG for visual review. `eval` and `shot` subcommands run one-off runtime probes and screenshots. Read `.pi/skills/browser-check/SKILL.md` for recipes and the headless event-retargeting caveat. The skill is local agent tooling under the gitignored `.pi/` directory, so it is present in this checkout but not deployed or committed; if it is absent (e.g. a fresh clone), use the manual baseline list below instead.
+
+The skill automates most of the manual list below; fall back to a real browser for anything it cannot express (task completion + Today projection, whole-space import, destructive reset). When you do test manually, use a fresh temporary browser profile for first-run behavior and retain the same profile for reload/persistence tests.
 
 ### Baseline browser smoke test
 
