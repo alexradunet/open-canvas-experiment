@@ -117,6 +117,143 @@ Newsreader is restrained to short phrases. Work Sans carries most of the interfa
 4. **Inset wells:** portal previews, form controls, minimap, and technical details. Use darker surfaces and no extra drop shadow.
 5. **Elevation:** dialogs, menus, sheets, and the assistant panel only.
 
+## Standards-first design system architecture
+
+The implementation follows a 2026 browser-standards policy rather than creating a framework, component package, or bespoke token runtime.
+
+### Browser support policy
+
+1. **Core behavior:** use features classed as Baseline Widely available, backed by semantic HTML and ordinary CSS layout.
+2. **Progressive enhancement:** use Baseline Newly available features only when the same task works without them.
+3. **Limited features:** do not make core behavior depend on them. Feature-detect with `@supports` or the relevant JavaScript capability test rather than browser sniffing.
+4. **Actual targets:** verify current Chrome/Edge, Firefox, and Safari behavior; Baseline does not cover every embedded webview.
+
+The application already follows this policy for `document.startViewTransition`: the canvas switch still occurs when the API is absent. Keep that invariant for every new platform feature.
+
+### Token source of truth
+
+Create `styles/tokens.css` as the runtime source of truth. Do not duplicate the same values in a hand-maintained JSON token file. The stable [Design Tokens Format Module 2025.10](https://www.designtokens.org/TR/2025.10/format/) informs naming, grouping, aliases, durations, and cubic Bézier types; a DTCG JSON source becomes worthwhile only when an automated translation step or external design-tool exchange is introduced.
+
+Use three token tiers:
+
+1. **Primitive:** raw values such as `--balaur-color-soot-950`, `--balaur-space-3`, and `--balaur-duration-press`.
+2. **Semantic:** role aliases such as `--balaur-surface-canvas`, `--balaur-content-primary`, `--balaur-border-focus`, and `--balaur-motion-travel`.
+3. **Component-local:** private custom properties declared on a component root, such as `--node-surface` or `--dialog-edge`, that default to semantic tokens.
+
+Components consume semantic or component-local tokens, never raw primitive colors. Token names describe a role rather than a current visual result. Explicit accessible foreground/background pairs are tokens; derived `color-mix()` values are reserved for non-text decoration.
+
+Use CSS `@property` only for a custom property that must interpolate as a typed value. Registering every color, spacing, or duration token adds no value.
+
+### Cascade contract
+
+Declare the complete order once in `styles/layers.css`:
+
+```css
+@layer tokens, foundation, shell, canvas, components, themes, responsive, motion;
+```
+
+- Every author rule belongs to a named layer; no unlayered escape hatch.
+- Selectors remain component-class based and low-specificity. Use `:where()` to group states without increasing specificity.
+- `!important` is not part of ordinary component styling. The final `motion` layer can honor reduced motion without a universal `!important` reset.
+- Use `@scope` only when a real DOM subtree needs local selector names and the unscoped fallback remains functional. Do not rewrite stable class selectors merely because `@scope` is new.
+- Keep reset/element defaults in `foundation.css`, not in component files.
+
+### Responsive contract
+
+- Use named size container queries for reusable compositions such as Today sections and dialog field groups.
+- Use viewport media queries only for application-shell changes such as collapsing the library or inspector.
+- Use logical properties for shell and form layout. Preserve physical `left`, `top`, `x`, and `y` where they represent JSON Canvas coordinates rather than reading direction.
+- Container style queries are not required for the rebrand; semantic state remains explicit in attributes and classes.
+
+### Native component boundary
+
+- Prefer native `button`, `input`, `select`, `textarea`, `dialog`, `nav`, `main`, `aside`, `article`, `form`, and `template`.
+- Keep `<dialog>` for blocking forms and decisions. Use the Popover API only for future non-modal menus, hints, or transient controls.
+- Do not replace native `<select>` with an experimental customizable control in this pass.
+- Do not create a Custom Element for visual grouping alone. Introduce one only when an element owns reusable lifecycle behavior, a stable event/property API, and cleanup that is otherwise duplicated.
+- Do not add Shadow DOM to the application shell. Global semantic tokens, native landmarks, and ordinary document styling are assets here. Sandboxed live widgets already provide the stronger isolation boundary they need.
+- Express state through semantic attributes (`hidden`, `inert`, `aria-expanded`, `aria-current`, `aria-busy`) and narrowly named classes/data attributes. CSS must not infer business state from visible text.
+
+### Progressive-enhancement matrix
+
+| Feature | Rebrand policy |
+|---|---|
+| CSS custom properties, cascade layers, size container queries, native dialogs, `inert` | Core |
+| `@property`, `@scope`, Popover API, `@starting-style`, View Transition API | Enhancement with a working fallback |
+| CSS anchor positioning, arbitrary-property style queries, customizable select, scroll-driven animation | Defer until a concrete interaction needs them and target support is verified |
+
+### Accessibility contract for design-system components
+
+- Target 44 × 44 CSS pixels for touch controls; WCAG 2.2 AA permits 24 × 24 with exceptions, but the larger application target is safer.
+- Keep focused controls unobscured by the top bar, assistant, sheets, and bottom tool clusters.
+- Focus styling targets the WCAG 2.2 focus-appearance geometry even though that criterion is AAA: at least a 2 CSS pixel perimeter with 3:1 state contrast.
+- Any new non-essential drag interaction must have a single-pointer alternative under WCAG 2.5.7. Existing connect mode already complements drag-to-connect. Keyboard/pointer alternatives for freeform node movement and resize are a separate functional accessibility scope and must not be falsely claimed as solved by this visual rebrand.
+
+## Motion design system groundwork
+
+Motion is a semantic system, not a collection of per-component magic numbers. Define its duration, easing, and distance tokens with the rest of the source-of-truth vocabulary in `styles/tokens.css`. Create `styles/motion.css` to consume those tokens and own transitions, keyframes, View Transition pseudo-elements, and reduced-motion substitutions.
+
+### Motion principles
+
+1. Motion explains state, hierarchy, or spatial travel. It does not simulate constant ambience.
+2. Final state belongs to DOM attributes/classes; an animation never becomes the source of truth.
+3. Prefer CSS transitions for direct state changes, the View Transition API for document-state swaps, and the Web Animations API only for interruptible or geometry-dependent sequences.
+4. Animate `transform` and `opacity` when possible. Small color/border transitions are acceptable; avoid animating layout properties.
+5. A new interaction cancels or supersedes old motion. Any future `Animation.finished` consumer must handle `AbortError` after `cancel()`.
+6. `requestAnimationFrame` remains reserved for canvas camera/render loops and live widgets, not ordinary component entrance effects.
+
+### Motion tokens
+
+The first vocabulary is deliberately small and aligns with DTCG `duration` and `cubicBezier` types:
+
+```css
+:root {
+  --balaur-duration-instant: 0ms;
+  --balaur-duration-press: 80ms;
+  --balaur-duration-focus: 120ms;
+  --balaur-duration-selection: 160ms;
+  --balaur-duration-panel: 220ms;
+  --balaur-duration-travel: 280ms;
+
+  --balaur-ease-standard: cubic-bezier(.2, .8, .2, 1);
+  --balaur-ease-enter: cubic-bezier(.16, 1, .3, 1);
+  --balaur-ease-exit: cubic-bezier(.4, 0, 1, 1);
+
+  --balaur-distance-press: 2px;
+  --balaur-distance-panel: 16px;
+  --balaur-scale-travel: .06;
+}
+```
+
+Component recipes consume these tokens:
+
+| Role | Duration | Behavior |
+|---|---:|---|
+| Press | 80 ms | Oak control moves 2 px and reverses immediately |
+| Focus/state | 120 ms | Focus, hover, active color, and connection state |
+| Selection | 160 ms | Balaur bearing draws once on a newly selected node |
+| Panel | 220 ms | Library sheet, inspector, assistant, menu, or dialog entry/exit |
+| Spatial travel | 280 ms | Entering or leaving a sub-canvas |
+
+### API boundary
+
+- Keep ordinary hover, focus, pressed, sheet, and bearing motion in CSS.
+- Wrap `document.startViewTransition(update)` behind one feature/reduced-motion check before expanding its use. The update executes synchronously when motion is reduced or the API is unavailable.
+- Do not introduce a general animation utility until two genuinely different JavaScript-driven sequences need the same cancellation/lifecycle behavior.
+- `@starting-style` and discrete top-layer transitions may progressively enhance dialogs or future popovers, but open/close and focus behavior must work without them.
+- Scroll-driven animations are out of scope; the product’s primary spatial motion comes from the canvas camera, not page-scroll decoration.
+
+### Reduced motion and adjacent preferences
+
+Under `prefers-reduced-motion: reduce`:
+
+- set semantic motion durations and distances to zero;
+- skip View Transition snapshots;
+- disable bearing draw, connection-flow, AI-running shimmer, and transform-based panel travel while preserving the final state;
+- do not disable functional progress/status updates.
+
+The default design already avoids translucent glass. `prefers-reduced-transparency`, `prefers-contrast`, and `forced-colors` are progressive adaptations: remove blur/grain where requested, strengthen boundaries for more contrast, and use system colors in forced-color mode.
+
 ## Signature elements
 
 ### Balaur bearing
@@ -316,19 +453,26 @@ The rebrand does not change data flow:
 
 ## Implementation boundaries
 
-Expected files remain within the current application:
+Expected files remain within the current standards-first application:
 
-- `index.html`: visible Balaur naming, mark, labels, and narrowly scoped structural classes.
-- `styles/foundation.css`: palette aliases, typography, material and motion tokens.
-- `styles/shell.css`: oak top bar, capture shelf, library, and shell geometry.
-- `styles/canvas.css`: map table, parchment nodes, portal frames, bearing, edges, familiar, tools, and minimap.
-- `styles/components.css`: inspector, Today, assistant, dialogs, forms, notices, and toasts.
-- `styles/responsive.css`: sheet behavior, stacked Today view, touch targets, and narrow viewport fixes.
-- `styles/themes.css`: preserve AI-selectable canvas themes only where they do not conflict with legibility; do not add another application theme.
-- `app.js`: user-facing naming, backup filename, and only the minimal class/state hooks required by the visual system.
-- `README.md` and existing design-system documentation: update visible product identity and describe the distilled Hearthwood relationship after the implementation works.
+- Create `styles/tokens.css`: primitive, semantic, and component contract tokens for color, type, space, border, material, target size, and motion values.
+- Create `styles/motion.css`: transition recipes, keyframes, View Transition rules, motion preference overrides, and future top-layer entry/exit hooks.
+- Modify `styles/layers.css`: declare the complete `tokens → foundation → shell → canvas → components → themes → responsive → motion` order.
+- Modify `styles/foundation.css`: retain reset, element defaults, selection, focus, forced-color, contrast, and transparency adaptations; remove palette and motion ownership.
+- Modify `index.html`: load `tokens.css` before `foundation.css`, load `motion.css` after `responsive.css`, remove the Linen color-token stylesheet, and update visible Balaur naming/mark/labels.
+- Modify `styles/shell.css`: oak top bar, responsive familiar control, capture shelf, library, and shell geometry.
+- Modify `styles/canvas.css`: map table, parchment nodes, group/widget exceptions, portal frames, bearing structure, edges, tools, and minimap; move motion declarations to `motion.css`.
+- Modify `styles/components.css`: inspector, Today, assistant, dialogs, forms, notices, and toasts; move motion declarations to `motion.css`.
+- Modify `styles/responsive.css`: sheet behavior, stacked Today view, touch targets, and narrow viewport fixes; use container queries for component composition and media queries for the shell.
+- Modify `styles/themes.css`: preserve AI-selectable canvas themes only where they do not conflict with legibility; do not add another application theme.
+- Modify `app.js`: user-facing naming, `.balaur.json` backup filename, one reduced-motion-aware View Transition boundary, and the minimal selection-entry state required by the Balaur bearing.
+- Modify `main.js` only if the offline-ready global receives a visible name; otherwise preserve the existing internal namespace.
+- Replace `icons/orbit.svg`, `icons/orbit-192.png`, and `icons/orbit-512.png` with a simple Balaur cartographer mark and update their filenames.
+- Modify `manifest.webmanifest`: Balaur name, short name, palette, and icon paths.
+- Modify `sw.js`: cache the new token/motion styles and Balaur icons; bump the cache version while preserving the existing storage/data namespace.
+- Modify `README.md`, `docs/design-system.md`, `docs/offline.md`, and other existing user-facing documentation after the application works.
 
-Do not edit `storage/life-store.js` unless a visible product string exists there. Do not change schema, marker, or storage contracts.
+Do not edit `storage/life-store.js` unless a visible product string exists there. Do not change SQLite schema, JSON Canvas structure, task/JD markers, browser storage keys, or workspace bundle `format`.
 
 ## Verification contract
 
@@ -364,6 +508,19 @@ Do not edit `storage/life-store.js` unless a visible product string exists there
 
 Capture the canvas, Today, dialog, assistant, and narrow shell. Compare them with the approved Cartographer’s Tavern direction. Remove any texture, border, shadow, motif, or label that competes with node titles, task state, or primary actions.
 
+## Research basis
+
+- [Design Tokens Format Module 2025.10](https://www.designtokens.org/TR/2025.10/format/) — stable DTCG interchange format, token types, aliases, duration, cubic Bézier, and transition composites.
+- [Baseline](https://web.dev/baseline) and [Baseline with progressive enhancement](https://web.dev/articles/baseline-and-progressive-enhancement) — browser-support policy.
+- [CSS cascade layers](https://developer.mozilla.org/en-US/docs/Web/CSS/Reference/At-rules/@layer) and [CSS `@scope`](https://developer.mozilla.org/en-US/docs/Web/CSS/Reference/At-rules/@scope) — cascade and selector boundaries.
+- [CSS container queries](https://developer.mozilla.org/en-US/docs/Web/CSS/CSS_containment/Container_queries) — component-owned responsive composition.
+- [CSS `@property`](https://developer.mozilla.org/en-US/docs/Web/CSS/@property) — typed custom properties for real interpolation needs.
+- [Web Components](https://developer.mozilla.org/en-US/docs/Web/API/Web_components) — native reusable-element boundaries; used only when lifecycle/API ownership justifies them.
+- [Popover API](https://developer.mozilla.org/en-US/docs/Web/API/Popover_API), [`<dialog>`](https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/dialog), and [`inert`](https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Global_attributes/inert) — native top-layer and interaction primitives.
+- [`Document.startViewTransition()`](https://developer.mozilla.org/en-US/docs/Web/API/Document/startViewTransition), [`@starting-style`](https://developer.mozilla.org/en-US/docs/Web/CSS/Reference/At-rules/@starting-style), and [Web Animations cancellation](https://developer.mozilla.org/en-US/docs/Web/API/Animation/cancel) — motion API boundaries.
+- [`prefers-reduced-motion`](https://developer.mozilla.org/en-US/docs/Web/CSS/Reference/At-rules/@media/prefers-reduced-motion) — remove, reduce, or replace non-essential motion.
+- [WCAG 2.2](https://www.w3.org/TR/WCAG22/) and [what changed in WCAG 2.2](https://www.w3.org/WAI/standards-guidelines/wcag/new-in-22/) — focus visibility, dragging alternatives, target size, and consistent help.
+
 ## Acceptance criteria
 
 - Every visible Orbit product reference becomes Balaur.
@@ -377,3 +534,7 @@ Capture the canvas, Today, dialog, assistant, and narrow shell. Compare them wit
 - The application works at 1440 × 1000 and 390 × 844 without clipping or inaccessible controls.
 - Keyboard focus, reduced motion, semantic labels, and color-independent state remain intact.
 - No framework, OCTANT dependency, storage migration, or unrelated behavioral feature is introduced.
+- The runtime design-system source is CSS custom properties in `styles/tokens.css`; no hand-maintained duplicate JSON token source exists.
+- Every author style belongs to the declared cascade layer order.
+- Motion values come from the semantic token vocabulary in `styles/tokens.css`; `styles/motion.css` owns reusable recipes, and component files contain no private duration/easing magic numbers.
+- Core behavior remains functional without View Transitions, `@starting-style`, `@scope`, Popover, or other progressive enhancements.
