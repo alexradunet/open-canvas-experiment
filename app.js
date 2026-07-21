@@ -7,7 +7,7 @@ const COLORS = {
 const demoCanvas = {
   nodes: [
     { id:"g-week", type:"group", x:0, y:0, width:690, height:600, label:"This week", color:"4" },
-    { id:"g-horizon", type:"group", x:750, y:0, width:590, height:600, label:"On the horizon", color:"6" },
+    { id:"g-horizon", type:"group", x:750, y:0, width:590, height:810, label:"On the horizon", color:"6" },
     { id:"n-focus", type:"text", x:35, y:48, width:620, height:145, color:"3", text:"# A calmer, more intentional week\nProtect the mornings, move the important work forward, and leave enough space to notice life.\n\n`WEEK 29`  ·  **3 priorities**" },
     { id:"n-project", type:"text", x:35, y:230, width:295, height:240, color:"6", text:"# Ship the portfolio refresh\nMake the work feel as considered as the work itself.\n\n- [x] Finalize case study copy\n- [ ] Record walkthrough\n- [ ] Publish and share\n\nProgress: 66%" },
     { id:"n-habit", type:"text", x:360, y:230, width:295, height:150, color:"4", text:"# Morning pages\nWrite three pages before opening any inputs.\n\n**5 day streak**  ·  07:00" },
@@ -15,7 +15,7 @@ const demoCanvas = {
     { id:"n-goal", type:"text", x:785, y:48, width:520, height:190, color:"1", text:"# Run a comfortable 10K\nBuild patiently. Finish feeling like there was a little more in the tank.\n\n- [x] Choose a training plan\n- [ ] Three easy runs / week\n- [ ] Race day · Sep 14\n\nProgress: 35%" },
     { id:"n-reading", type:"text", x:785, y:280, width:250, height:160, color:"5", text:"# Reading next\n- [ ] Four Thousand Weeks\n- [ ] The Creative Act\n- [ ] Braiding Sweetgrass" },
     { id:"n-trip", type:"link", x:1065, y:280, width:240, height:160, color:"6", url:"https://www.openstreetmap.org" },
-    { id:"n-note", type:"text", x:785, y:470, width:520, height:85, color:"3", text:"## Remember\nA plan is useful, but a good day is the point." }
+    { id:"n-orbit", type:"file", x:785, y:475, width:520, height:300, color:"5", file:"widgets/focus-orbit.html" }
   ],
   edges: [
     { id:"e-focus-project", fromNode:"n-focus", fromSide:"bottom", toNode:"n-project", toSide:"top", color:"6", label:"focus" },
@@ -80,6 +80,11 @@ function safeURL(value="") {
   try { const url = new URL(value, location.href); return ["http:","https:","mailto:"].includes(url.protocol) ? escapeHTML(value) : "#"; }
   catch (_) { return "#"; }
 }
+function safeFileURL(value="") {
+  const path=String(value).replace(/\\/g,"/");
+  if (!path || path.startsWith("/") || path.includes("..") || /^[a-z][a-z0-9+.-]*:/i.test(path)) return "about:blank";
+  return encodeURI(path).replace(/#/g,"%23");
+}
 
 function textMeta(node) {
   const map = {"1":"GOAL", "2":"IDEA", "3":"NOTE", "4":"HABIT", "5":"RESOURCE", "6":"PROJECT"};
@@ -137,7 +142,10 @@ function renderNodes() {
       try { linkTitle = new URL(node.url).hostname.replace(/^www\./, ""); } catch (_) {}
       content.innerHTML = `<div class="node-kicker">LINK</div><h3>${escapeHTML(linkTitle)}</h3><p>Open this resource in a new tab.</p><a class="node-link" href="${safeURL(node.url)}" target="_blank" rel="noreferrer">${escapeHTML(node.url)} ↗</a>`;
     } else if (node.type === "file") {
-      content.innerHTML = `<div class="node-kicker">FILE</div><div class="file-preview">▧</div><h3>${escapeHTML(node.file.split("/").pop())}</h3><p>${escapeHTML(node.subpath || node.file)}</p>`;
+      if (/\.html?$/i.test(node.file)) {
+        element.classList.add("html-widget");
+        content.innerHTML = `<div class="node-kicker">LIVE HTML · SANDBOXED</div><iframe class="widget-frame" src="${safeFileURL(node.file)}" sandbox="allow-scripts" loading="lazy" referrerpolicy="no-referrer" title="${escapeHTML(node.file.split("/").pop())}"></iframe><div class="widget-shield"></div>`;
+      } else content.innerHTML = `<div class="node-kicker">FILE</div><div class="file-preview">▧</div><h3>${escapeHTML(node.file.split("/").pop())}</h3><p>${escapeHTML(node.subpath || node.file)}</p>`;
     }
     element.addEventListener("pointerdown", event => nodePointerDown(event, node));
     element.addEventListener("click", event => {
@@ -195,7 +203,7 @@ function renderEdges() {
 }
 
 function render() {
-  applyCamera(); renderEdges(); renderNodes(); renderInspector();
+  applyCamera(); renderEdges(); renderNodes(); renderInspector(); updateAssistantContext();
 }
 function applyCamera() {
   world.style.transform = `translate(${camera.x}px,${camera.y}px) scale(${camera.zoom})`;
@@ -280,6 +288,7 @@ function addNode(kind, point) {
     goal:{type:"text",color:"1",width:300,height:190,text:"# A meaningful goal\nWhat would make this worth doing?\n\n- [ ] Define the first step\n\nProgress: 0%"},
     habit:{type:"text",color:"4",width:280,height:145,text:"# New daily practice\nMake it small enough to begin today."},
     project:{type:"text",color:"6",width:300,height:210,text:"# Untitled project\nDescribe the outcome, not just the activity.\n\n- [ ] First milestone\n- [ ] Next milestone\n\nProgress: 0%"},
+    widget:{type:"file",color:"5",width:480,height:290,file:"widgets/focus-orbit.html"},
     group:{type:"group",color:"5",width:620,height:430,label:"New area"}
   };
   const preset=presets[kind]||presets.note;
@@ -287,6 +296,7 @@ function addNode(kind, point) {
   documentData.nodes ||= [];
   if (kind==="group") documentData.nodes.unshift(node); else documentData.nodes.push(node);
   selected={kind:"node",id:node.id}; shell.classList.add("inspector-open"); scheduleSave(); render();
+  return node;
 }
 
 function renderInspector() {
@@ -361,6 +371,74 @@ async function importCanvas(file) {
   catch(error){alert(`Could not import this file.\n\n${error.message}`);}
 }
 
+// Canvas-aware assistant prototype. A remote model should produce these operations,
+// never arbitrary host-page JavaScript. Each operation is checked before commit.
+function applyCanvasOperations(operations) {
+  const draft=clone(documentData), nodeKeys=new Set(["text","file","subpath","url","label","background","backgroundStyle","x","y","width","height","color"]);
+  for (const operation of operations) {
+    if (!operation || typeof operation.type!=="string") throw new Error("Malformed canvas operation");
+    if (operation.type==="node.add") {
+      if (!isCanvas({nodes:[operation.node],edges:[]})) throw new Error("Invalid node");
+      draft.nodes.push(clone(operation.node));
+    } else if (operation.type==="node.update") {
+      const node=draft.nodes.find(item=>item.id===operation.id);if(!node)throw new Error(`Unknown node ${operation.id}`);
+      for(const [key,value] of Object.entries(operation.patch||{})){if(!nodeKeys.has(key))throw new Error(`Field ${key} cannot be changed`);node[key]=value;}
+    } else if (operation.type==="node.remove") {
+      draft.nodes=draft.nodes.filter(item=>item.id!==operation.id);draft.edges=draft.edges.filter(edge=>edge.fromNode!==operation.id&&edge.toNode!==operation.id);
+    } else if (operation.type==="edge.add") {
+      if (!isCanvas({nodes:[],edges:[operation.edge]}))throw new Error("Invalid edge");draft.edges.push(clone(operation.edge));
+    } else if (operation.type==="theme.set") {
+      applyCanvasTheme(operation.theme);
+    } else throw new Error(`Unsupported operation ${operation.type}`);
+  }
+  if(!isCanvas(draft))throw new Error("The resulting canvas is invalid");
+  documentData=draft;selected=null;shell.classList.remove("inspector-open");scheduleSave();render();updateAssistantContext();
+}
+
+function applyCanvasTheme(theme) {
+  const allowed=new Set(["default","warm","calm","contrast"]), value=allowed.has(theme)?theme:"default";
+  if(value==="default")document.body.removeAttribute("data-canvas-theme");else document.body.dataset.canvasTheme=value;
+  localStorage.setItem("orbit-canvas-theme",value);
+}
+function canvasSummary() {
+  const nodes=(documentData.nodes||[]).filter(node=>node.type!=="group"), counts={goals:0,habits:0,projects:0,ideas:0,widgets:0};
+  nodes.forEach(node=>{if(node.color==="1")counts.goals++;if(node.color==="4")counts.habits++;if(node.color==="6")counts.projects++;if(node.color==="2")counts.ideas++;if(node.type==="file"&&/\.html?$/i.test(node.file))counts.widgets++;});
+  const openTasks=nodes.filter(n=>n.type==="text").reduce((total,n)=>total+(n.text.match(/- \[ \]/g)||[]).length,0);
+  return {nodes:nodes.length,edges:(documentData.edges||[]).length,openTasks,...counts};
+}
+function updateAssistantContext() {
+  const context=$("#aiContext");if(!context)return;const s=canvasSummary();
+  context.innerHTML=`READING <b>${s.nodes} nodes</b> · <b>${s.edges} links</b> · <b>${s.openTasks} open tasks</b> · <b>${s.widgets} widgets</b>`;
+}
+function setAssistantOpen(open) {
+  $("#aiPanel").classList.toggle("open",open);$("#aiPanel").setAttribute("aria-hidden",String(!open));updateAssistantContext();if(open)setTimeout(()=>$("#aiPrompt").focus(),180);
+}
+function assistantMessage(text,role="assistant") {
+  const message=document.createElement("div");message.className=`ai-message ${role}`;message.innerHTML=role==="assistant"?"<span>✦</span><p></p>":"<p></p>";$("p",message).textContent=text;$("#aiMessages").append(message);message.scrollIntoView({behavior:"smooth",block:"end"});
+}
+function runAssistant(prompt) {
+  const request=prompt.trim();if(!request)return;assistantMessage(request,"user");const lower=request.toLowerCase();let response="";
+  try {
+    if(/summar|what(?:'s| is) (?:on|in)|parse/.test(lower)) {
+      const s=canvasSummary();response=`I parsed the current JSON Canvas: ${s.nodes} content nodes and ${s.edges} connections. I found ${s.goals} goals, ${s.projects} projects, ${s.habits} habits, ${s.ideas} ideas, ${s.widgets} live widgets, and ${s.openTasks} unchecked tasks.`;
+    } else if(/warm|cozy|earth/.test(lower)) {applyCanvasOperations([{type:"theme.set",theme:"warm"}]);response="Applied a warmer, earth-toned canvas theme. This visual preference stays separate from the portable .canvas document.";
+    } else if(/calm|ocean|cool|teal/.test(lower)) {applyCanvasOperations([{type:"theme.set",theme:"calm"}]);response="Applied the calm teal canvas theme.";
+    } else if(/contrast|accessible/.test(lower)) {applyCanvasOperations([{type:"theme.set",theme:"contrast"}]);response="Applied the high-contrast canvas theme.";
+    } else if(/reset.*(?:theme|style)|default (?:theme|style)/.test(lower)) {applyCanvasOperations([{type:"theme.set",theme:"default"}]);response="Reset the canvas styling to its default theme.";
+    } else if(/(?:add|create).*(?:3d|three|html|widget)/.test(lower)) {
+      const center=canvasPoint(canvas.getBoundingClientRect().left+canvas.clientWidth/2,canvas.getBoundingClientRect().top+canvas.clientHeight/2),node={id:uid("node"),type:"file",x:Math.round(center.x-240),y:Math.round(center.y-145),width:480,height:290,color:"5",file:"widgets/focus-orbit.html"};applyCanvasOperations([{type:"node.add",node}]);response="Added a sandboxed Three.js file node. It is still a standard JSON Canvas file node pointing to an HTML file.";
+    } else {
+      const match=request.match(/(?:add|create)\s+(?:a |an )?(goal|habit|project|note)(?:\s+(?:called|named|to))?\s+(.+)/i);
+      if(match){const kind=match[1].toLowerCase(),title=match[2].replace(/[.!]$/,"");const preset={goal:["1",`# ${title}\nWhat does success look like?\n\n- [ ] Choose the first step\n\nProgress: 0%`],habit:["4",`# ${title}\nMake the practice small and repeatable.`],project:["6",`# ${title}\nDefine the desired outcome.\n\n- [ ] First milestone\n\nProgress: 0%`],note:["2",`# ${title}\nStart writing here…`]}[kind];const center=canvasPoint(canvas.getBoundingClientRect().left+canvas.clientWidth/2,canvas.getBoundingClientRect().top+canvas.clientHeight/2),node={id:uid("node"),type:"text",x:Math.round(center.x-150),y:Math.round(center.y-90),width:300,height:kind==="project"||kind==="goal"?200:150,color:preset[0],text:preset[1]};applyCanvasOperations([{type:"node.add",node}]);response=`Added “${title}” as a ${kind} near the center of your current view.`;}
+      else response="I understand this canvas, but the GitHub Pages demo uses a local intent parser rather than a remote model. Try asking me to summarize it, add a goal/habit/project, add a 3D widget, or change the theme to warm, calm, or high contrast.";
+    }
+  } catch(error){response=`I did not apply that change: ${error.message}`;}
+  setTimeout(()=>assistantMessage(response),180);
+}
+
+window.orbitCanvas={getDocument:()=>clone(documentData),getSummary:canvasSummary,applyOperations:applyCanvasOperations};
+applyCanvasTheme(localStorage.getItem("orbit-canvas-theme")||"default");
+
 $$("[data-add]").forEach(button=>button.onclick=()=>addNode(button.dataset.add));
 $("#newGroup").onclick=()=>addNode("group");
 $$(".nav-item[data-filter]").forEach(button=>button.onclick=()=>{activeFilter=button.dataset.filter;$$(".nav-item[data-filter]").forEach(b=>b.classList.toggle("active",b===button));renderNodes();renderEdges();});
@@ -368,6 +446,9 @@ $$(".tool").forEach(button=>button.onclick=()=>{const tool=button.dataset.tool;i
 $("#zoomIn").onclick=()=>setZoom(camera.zoom*1.2);$("#zoomOut").onclick=()=>setZoom(camera.zoom/1.2);$("#zoomLabel").onclick=()=>setZoom(1);$("#fitView").onclick=fitView;
 $("#exportButton").onclick=exportCanvas;$("#importButton").onclick=()=>$("#fileInput").click();$("#fileInput").onchange=e=>{if(e.target.files[0])importCanvas(e.target.files[0]);e.target.value="";};
 $("#sidebarToggle").onclick=()=>shell.classList.toggle("sidebar-closed");
+$("#assistantButton").onclick=()=>setAssistantOpen(!$("#aiPanel").classList.contains("open"));$("#closeAssistant").onclick=()=>setAssistantOpen(false);
+$("#aiForm").onsubmit=event=>{event.preventDefault();const input=$("#aiPrompt"),prompt=input.value;input.value="";runAssistant(prompt);};
+$$(".ai-suggestions button").forEach(button=>button.onclick=()=>runAssistant(button.textContent));
 $("#canvasTitle").value=localStorage.getItem("orbit-title")||"Life OS — Summer";$("#canvasTitle").oninput=e=>localStorage.setItem("orbit-title",e.target.value);
 $("#resetDemo").onclick=()=>{if(confirm("Reset the canvas to the demo? Your local changes will be replaced.")){documentData=clone(demoCanvas);selected=null;scheduleSave();render();fitView();toast("Demo restored");}};
 $("#minimap").onclick=fitView;

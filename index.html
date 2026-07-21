@@ -22,6 +22,7 @@
 
       <div class="top-actions">
         <span class="save-state" id="saveState"><i></i> Saved locally</span>
+        <button class="button assistant-button" id="assistantButton"><span>✦</span> Ask Orbit</button>
         <button class="button ghost" id="importButton">Import</button>
         <button class="button primary" id="exportButton">Export .canvas</button>
         <input type="file" id="fileInput" accept=".canvas,.json,application/json" hidden />
@@ -36,6 +37,7 @@
           <button class="add-card" data-add="goal"><span class="add-icon goal-icon">◎</span><b>Goal</b><small>Desired outcome</small></button>
           <button class="add-card" data-add="habit"><span class="add-icon habit-icon">↻</span><b>Habit</b><small>Daily practice</small></button>
           <button class="add-card" data-add="project"><span class="add-icon project-icon">◇</span><b>Project</b><small>Active work</small></button>
+          <button class="add-card wide" data-add="widget"><span class="add-icon widget-icon">◉</span><b>Live widget</b><small>Sandboxed HTML, CSS, or Three.js</small></button>
         </div>
       </section>
 
@@ -84,6 +86,28 @@
         <span>↖</span><h3>Nothing selected</h3><p>Select a card or connection to edit its details.</p>
       </div>
     </aside>
+
+    <section class="ai-panel" id="aiPanel" aria-hidden="true">
+      <header class="ai-head">
+        <div><span class="ai-spark">✦</span><div><b>Orbit Copilot</b><small>Canvas-aware prototype</small></div></div>
+        <button id="closeAssistant" aria-label="Close assistant">×</button>
+      </header>
+      <div class="ai-context" id="aiContext"></div>
+      <div class="ai-messages" id="aiMessages">
+        <div class="ai-message assistant"><span>✦</span><p>I can read this canvas, create cards, filter your view, and safely change its visual theme. Try one of the ideas below.</p></div>
+      </div>
+      <div class="ai-suggestions">
+        <button>Make the canvas warmer</button>
+        <button>Summarize my canvas</button>
+        <button>Add a goal called Read 20 books</button>
+        <button>Add a 3D widget</button>
+      </div>
+      <form class="ai-form" id="aiForm">
+        <textarea id="aiPrompt" rows="2" placeholder="Ask about or change this canvas…"></textarea>
+        <button type="submit" aria-label="Send">↑</button>
+      </form>
+      <footer><i></i> Local prototype — canvas data stays in this browser</footer>
+    </section>
   </div>
 
   <template id="nodeTemplate">

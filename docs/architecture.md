@@ -36,6 +36,8 @@ packages/
   editor-react/        React components and interaction adapters
   storage/             Filesystem, SQLite, browser storage interfaces
   sync/                Operation log and sync adapters
+  widget-runtime/      Sandboxed HTML cards and addressable partial updates
+  ai-operations/       Context builder, schemas, validation, plan previews
 ```
 
 `canvas-core`, `json-canvas`, and `domain` should have no React or platform dependency. This is what preserves the option to build a React Native renderer later.
@@ -64,7 +66,9 @@ type CanvasCommand =
   | { type: "task.complete"; taskId: string; completedAt: string };
 ```
 
-Commands provide one place for validation, autosave, undo/redo, activity history, and eventual sync.
+Commands provide one place for validation, autosave, undo/redo, activity history, and eventual sync. Model output must compile into the same commands rather than directly manipulating React state or the host DOM.
+
+Live HTML/Three.js cards and the adaptation of `partialupdate` are described in [generative-canvas.md](generative-canvas.md).
 
 ## Delivery phases
 

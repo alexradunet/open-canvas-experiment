@@ -14,6 +14,8 @@ A small, standalone proof of concept for a life-management app whose primary int
 - Connect mode with editable edges
 - Markdown cards and task checkboxes
 - Inspector for content, geometry, colors, and edge routing
+- Sandboxed HTML/CSS/Three.js cards represented as standard file nodes
+- Canvas-aware local copilot prototype with validated operations and themes
 - Library filters
 - Browser-local persistence
 - JSON Canvas `.canvas` import and export
@@ -63,7 +65,7 @@ This prototype is intentionally plain JavaScript to validate interaction and the
 - **Capacitor** for mobile if a web-first UI is sufficient, or React Native with a shared domain package if native mobile interaction is central
 - SQLite for indexed tasks/calendar views while keeping `.canvas` files as the portable source format
 
-See [`docs/architecture.md`](docs/architecture.md) for a proposed package design.
+See [`docs/architecture.md`](docs/architecture.md) for a proposed package design and [`docs/generative-canvas.md`](docs/generative-canvas.md) for the live-card, partial-update, AI-operation, and security model.
 
 ## License
 

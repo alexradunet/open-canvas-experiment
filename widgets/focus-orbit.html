@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  *{box-sizing:border-box}html,body{width:100%;height:100%;margin:0;overflow:hidden;background:#0b1116;color:#dce8e8;font-family:system-ui,sans-serif}
+  #scene{position:absolute;inset:0}canvas{display:block;width:100%;height:100%}
+  .copy{position:absolute;left:18px;top:15px;pointer-events:none}.copy small{display:block;color:#5f7c7e;font:8px ui-monospace,monospace;letter-spacing:.14em}.copy b{display:block;margin-top:4px;font-size:13px;font-weight:600}.copy span{display:block;color:#7d9799;font-size:9px;margin-top:2px}
+  .legend{position:absolute;right:15px;bottom:13px;padding:5px 8px;border:1px solid #26383a;border-radius:10px;background:#0b1116aa;color:#648183;font:8px ui-monospace,monospace;pointer-events:none}
+  .css-orbit{position:absolute;left:50%;top:53%;width:230px;height:120px;transform:translate(-50%,-50%);pointer-events:none}.css-orbit i{position:absolute;inset:50% auto auto 50%;border:1px solid #315457;border-radius:50%;transform:translate(-50%,-50%)}.css-orbit i:nth-child(1){width:75px;height:30px}.css-orbit i:nth-child(2){width:145px;height:60px}.css-orbit i:nth-child(3){width:220px;height:90px}.css-orbit b{position:absolute;left:50%;top:50%;width:12px;height:12px;border-radius:50%;background:#7ee0a1;box-shadow:0 0 22px #7ee0a1;transform:translate(-50%,-50%)}.css-orbit em{position:absolute;width:7px;height:7px;border-radius:50%;background:#64cbd0;left:25px;top:46px;box-shadow:0 0 10px #64cbd0}.css-orbit em:last-child{background:#a78bfa;left:164px;top:23px}
+  .fallback{position:absolute;inset:0;display:none;place-items:center;color:#789;font-size:11px}
+</style>
+</head>
+<body>
+  <div id="scene"></div>
+  <div class="css-orbit" id="cssOrbit"><i></i><i></i><i></i><b></b><em></em><em></em></div>
+  <div class="copy"><small>LIVE THREE.JS WIDGET</small><b>Focus orbit</b><span>Drag to change perspective</span></div>
+  <div class="legend">● now &nbsp; ○ next</div>
+  <div class="fallback" id="fallback">Three.js could not be loaded.</div>
+<script type="module">
+try {
+  const THREE = await import('https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js');
+  const root=document.querySelector('#scene');
+  const scene=new THREE.Scene();
+  scene.fog=new THREE.FogExp2(0x0b1116,.055);
+  const camera=new THREE.PerspectiveCamera(45,1,.1,100);camera.position.set(0,4.2,8.5);camera.lookAt(0,0,0);
+  const renderer=new THREE.WebGLRenderer({antialias:true,alpha:true});renderer.setPixelRatio(Math.min(devicePixelRatio,2));root.append(renderer.domElement);
+  const group=new THREE.Group();group.rotation.x=-.32;scene.add(group);
+  const ringMaterial=new THREE.MeshBasicMaterial({color:0x315457,transparent:true,opacity:.7,side:THREE.DoubleSide});
+  [1.25,2.05,2.85].forEach((radius,i)=>{const ring=new THREE.Mesh(new THREE.RingGeometry(radius-.012,radius+.012,128),ringMaterial);ring.rotation.x=Math.PI/2;group.add(ring)});
+  const center=new THREE.Mesh(new THREE.IcosahedronGeometry(.32,2),new THREE.MeshBasicMaterial({color:0x7ee0a1}));group.add(center);
+  const dots=[];[[1.25,.2,0x7ee0a1],[2.05,2.3,0x64cbd0],[2.85,4.1,0xa78bfa]].forEach(([radius,angle,color],i)=>{const dot=new THREE.Mesh(new THREE.SphereGeometry(.11+i*.025,20,20),new THREE.MeshBasicMaterial({color}));dot.userData={radius,angle,speed:.0035-i*.0006};group.add(dot);dots.push(dot)});
+  const stars=new THREE.BufferGeometry(),positions=[];for(let i=0;i<160;i++)positions.push((Math.random()-.5)*16,(Math.random()-.5)*10,(Math.random()-.5)*10);stars.setAttribute('position',new THREE.Float32BufferAttribute(positions,3));scene.add(new THREE.Points(stars,new THREE.PointsMaterial({color:0x587376,size:.018,transparent:true,opacity:.65})));
+  let drag=false,lastX=0;renderer.domElement.addEventListener('pointerdown',e=>{drag=true;lastX=e.clientX;renderer.domElement.setPointerCapture(e.pointerId)});renderer.domElement.addEventListener('pointermove',e=>{if(drag){group.rotation.z+=(e.clientX-lastX)*.008;lastX=e.clientX}});renderer.domElement.addEventListener('pointerup',()=>drag=false);
+  function resize(){const w=root.clientWidth,h=root.clientHeight;renderer.setSize(w,h,false);camera.aspect=w/h;camera.updateProjectionMatrix()}new ResizeObserver(resize).observe(root);resize();
+  document.querySelector('#cssOrbit').style.display='none';
+  let frame;function animate(){frame=requestAnimationFrame(animate);dots.forEach(dot=>{dot.userData.angle+=dot.userData.speed;dot.position.set(Math.cos(dot.userData.angle)*dot.userData.radius,0,Math.sin(dot.userData.angle)*dot.userData.radius)});center.rotation.x+=.003;center.rotation.y+=.005;renderer.render(scene,camera)}animate();
+  new MutationObserver(()=>{if(!document.documentElement.isConnected){cancelAnimationFrame(frame);renderer.dispose()}}).observe(document,{childList:true,subtree:true});
+} catch(error) { document.querySelector('#fallback').style.display='grid'; console.error(error); }
+</script>
+</body>
+</html>
