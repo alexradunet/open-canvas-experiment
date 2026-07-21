@@ -1,0 +1,6 @@
+{
+  "packages": [
+    "npm:@tintinweb/pi-subagents",
+    "npm:pi-web-access"
+  ]
+}

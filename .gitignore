@@ -1,5 +1,4 @@
 .worktrees/
 
 # Local agent / tooling state — never deploy these.
-.pi/
 .superpowers/
