@@ -1,4 +1,4 @@
-/* Orbit is deliberately dependency-free. The persisted/exported document follows JSON Canvas 1.0. */
+/* Orbit is dependency-free. Every canvas document follows JSON Canvas 1.0; hierarchy and cameras live in a local workspace sidecar. */
 const COLORS = {
   "1": "#ff7b78", "2": "#efa66a", "3": "#e9d56b",
   "4": "#7ee0a1", "5": "#64cbd0", "6": "#a78bfa"
@@ -30,8 +30,11 @@ const $$ = (selector, root=document) => [...root.querySelectorAll(selector)];
 const clone = value => JSON.parse(JSON.stringify(value));
 const uid = prefix => `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2,7)}`;
 
-let documentData = loadDocument();
-let camera = { x: 80, y: 55, zoom: .78 };
+const WORKSPACE_KEY="orbit-workspace-v1",ROOT_CANVAS_ID="canvas-root";
+let workspace=loadWorkspace();
+let currentCanvasId=workspace.activeId;
+let documentData=workspace.canvases[currentCanvasId].document;
+let camera=workspace.canvases[currentCanvasId].camera||{x:80,y:55,zoom:.78};
 let selected = null;
 let currentTool = "select";
 let connectSource = null;
@@ -56,6 +59,18 @@ function loadDocument() {
   } catch (_) {}
   return clone(demoCanvas);
 }
+function freshWorkspace(document=loadDocument()){
+  return {version:1,rootId:ROOT_CANVAS_ID,activeId:ROOT_CANVAS_ID,canvases:{[ROOT_CANVAS_ID]:{id:ROOT_CANVAS_ID,title:localStorage.getItem("orbit-title")||"Life OS — Summer",parentId:null,portalNodeId:null,document,camera:{x:80,y:55,zoom:.78}}}};
+}
+function loadWorkspace(){
+  try{
+    const parsed=JSON.parse(localStorage.getItem(WORKSPACE_KEY)||"null"),canvases=parsed?.canvases;
+    if(parsed?.version===1&&canvases&&typeof canvases==="object"&&Object.keys(canvases).length&&Object.values(canvases).every(record=>record&&typeof record.id==="string"&&typeof record.title==="string"&&isCanvas(record.document))){
+      parsed.rootId=canvases[parsed.rootId]?parsed.rootId:Object.keys(canvases)[0];parsed.activeId=canvases[parsed.activeId]?parsed.activeId:parsed.rootId;return parsed;
+    }
+  }catch(_){}
+  return freshWorkspace();
+}
 
 function isCanvas(data) {
   if (!data || typeof data!=="object" || data.nodes&&!Array.isArray(data.nodes) || data.edges&&!Array.isArray(data.edges)) return false;
@@ -73,11 +88,17 @@ function isCanvas(data) {
   return true;
 }
 
+function saveCurrentCanvasState(){
+  const record=workspace.canvases[currentCanvasId];if(!record)return;record.document=documentData;record.camera={...camera};const title=$("#canvasTitle")?.value.trim();if(title)record.title=title;
+}
+function persistWorkspace(){
+  saveCurrentCanvasState();workspace.activeId=currentCanvasId;localStorage.setItem(WORKSPACE_KEY,JSON.stringify(workspace));localStorage.setItem("orbit-canvas-v1",JSON.stringify(workspace.canvases[workspace.rootId].document));localStorage.setItem("orbit-title",workspace.canvases[workspace.rootId].title);
+}
 function scheduleSave() {
   $("#saveState").innerHTML = "<i></i> Saving…";
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
-    localStorage.setItem("orbit-canvas-v1", JSON.stringify(documentData));
+    persistWorkspace();
     $("#saveState").innerHTML = "<i></i> Saved locally";
   }, 350);
 }
@@ -95,6 +116,45 @@ function safeFileURL(value="") {
   if (!path || path.startsWith("/") || path.includes("..") || /^[a-z][a-z0-9+.-]*:/i.test(path)) return "about:blank";
   return encodeURI(path).replace(/#/g,"%23");
 }
+function subcanvasIdFromNode(node){
+  if(node?.type!=="file")return null;const match=node.file.match(/^canvases\/([^/]+)\.canvas$/);return match&&workspace.canvases[match[1]]?match[1]:null;
+}
+function canvasRecord(id=currentCanvasId){return workspace.canvases[id];}
+function canvasDepth(id){
+  let depth=0,seen=new Set();while(workspace.canvases[id]?.parentId&&!seen.has(id)){seen.add(id);id=workspace.canvases[id].parentId;depth++;}return depth;
+}
+function canvasTrail(id=currentCanvasId){
+  const trail=[],seen=new Set();while(workspace.canvases[id]&&!seen.has(id)){seen.add(id);trail.unshift(workspace.canvases[id]);id=workspace.canvases[id].parentId;}return trail;
+}
+function portalPreview(document){
+  const nodes=(document.nodes||[]).slice(0,28);if(!nodes.length)return '<span class="portal-empty">Empty canvas · open to begin</span>';
+  const minX=Math.min(...nodes.map(node=>node.x)),minY=Math.min(...nodes.map(node=>node.y)),maxX=Math.max(...nodes.map(node=>node.x+node.width)),maxY=Math.max(...nodes.map(node=>node.y+node.height)),width=Math.max(1,maxX-minX),height=Math.max(1,maxY-minY),scale=Math.min(210/width,82/height);
+  return nodes.map(node=>`<i class="${node.type==="group"?"group":""}" style="left:${(node.x-minX)*scale}px;top:${(node.y-minY)*scale}px;width:${Math.max(2,node.width*scale)}px;height:${Math.max(2,node.height*scale)}px;${node.type==="group"?"":`background:${colorValue(node.color)}`}" ></i>`).join("");
+}
+function renderWorkspaceNavigation(){
+  const breadcrumbs=$("#canvasBreadcrumbs"),list=$("#canvasList");
+  if(breadcrumbs)breadcrumbs.innerHTML=canvasTrail().map((record,index,trail)=>`<button data-canvas-switch="${escapeHTML(record.id)}" ${index===trail.length-1?'aria-current="page"':''}>${escapeHTML(record.title)}</button>${index<trail.length-1?"<span>›</span>":""}`).join("");
+  if(list)list.innerHTML=Object.values(workspace.canvases).map(record=>`<button class="nav-item canvas-list-item ${record.id===currentCanvasId?"active":""}" data-canvas-switch="${escapeHTML(record.id)}" style="--canvas-depth:${canvasDepth(record.id)}"><span>${record.id===workspace.rootId?"◫":"↳"}</span><b>${escapeHTML(record.title)}</b><em>${(record.document.nodes||[]).length}</em></button>`).join("");
+  $$('[data-canvas-switch]').forEach(button=>button.onclick=()=>switchCanvas(button.dataset.canvasSwitch,{direction:"switch"}));
+}
+function activateCanvas(id,{focusNodeId=null,fit=false}={}){
+  const record=workspace.canvases[id];if(!record)return;currentCanvasId=id;workspace.activeId=id;documentData=record.document;camera=record.camera?{...record.camera}:{x:80,y:55,zoom:1};selected=null;connectSource=null;activeFilter="all";aiCardRuntime.clear();shell.classList.remove("inspector-open");$$('.nav-item[data-filter]').forEach(button=>button.classList.toggle("active",button.dataset.filter==="all"));$("#canvasTitle").value=record.title;render();
+  if(focusNodeId){const node=documentData.nodes.find(item=>item.id===focusNodeId);if(node)focusNode(node,1.05);else fitView();}
+  else if(fit||!record.camera)fitView();
+}
+function switchCanvas(id,{direction="in",focusNodeId=null,fit=false}={}){
+  if(!workspace.canvases[id]||id===currentCanvasId)return;saveCurrentCanvasState();document.body.dataset.canvasNavigation=direction;const update=()=>activateCanvas(id,{focusNodeId,fit}),transition=document.startViewTransition?.(update);if(!transition)update();else transition.finished.finally(()=>delete document.body.dataset.canvasNavigation);scheduleSave();
+}
+function enterSubcanvas(id){if(workspace.canvases[id])switchCanvas(id,{direction:"in",fit:!workspace.canvases[id].camera});}
+function leaveSubcanvas(){
+  const child=canvasRecord(),parentId=child?.parentId;if(!parentId)return;switchCanvas(parentId,{direction:"out",focusNodeId:child.portalNodeId});
+}
+function focusNode(node,zoom=1.05){camera.zoom=zoom;camera.x=(canvas.clientWidth-node.width*zoom)/2-node.x*zoom;camera.y=(canvas.clientHeight-node.height*zoom)/2-node.y*zoom;applyCamera();}
+function createSubcanvas(point){
+  const center=point||canvasPoint(canvas.getBoundingClientRect().left+canvas.clientWidth/2,canvas.getBoundingClientRect().top+canvas.clientHeight/2),id=uid("canvas"),nodeId=uid("node"),siblings=Object.values(workspace.canvases).filter(record=>record.parentId===currentCanvasId).length,title=`New canvas ${siblings+1}`,node={id:nodeId,type:"file",x:Math.round(center.x-180),y:Math.round(center.y-125),width:360,height:250,color:"3",file:`canvases/${id}.canvas`};
+  workspace.canvases[id]={id,title,parentId:currentCanvasId,portalNodeId:nodeId,document:{nodes:[],edges:[]},camera:null};documentData.nodes.push(node);selected={kind:"node",id:node.id};shell.classList.add("inspector-open");scheduleSave();render();toast("Sub-canvas created · double-click or zoom into it");return node;
+}
+function deleteCanvasTree(id){for(const child of Object.values(workspace.canvases).filter(record=>record.parentId===id))deleteCanvasTree(child.id);delete workspace.canvases[id];}
 
 const AI_CARD_MARKER="<!-- orbit:ai-card -->";
 function isAICard(node){return node?.type==="text"&&node.text.includes(AI_CARD_MARKER);}
@@ -104,7 +164,7 @@ function parseAICard(node){
 }
 function buildAICardText(title,prompt){return `${AI_CARD_MARKER}\n# ${title.trim()||"AI operator"}\n${prompt.trim()||"Summarize the connected notes."}`;}
 function nodeTitle(node){
-  if(isAICard(node))return parseAICard(node).title;if(node.type==="text"){const heading=node.text.match(/^#{1,2}\s+(.+)$/m);return heading?heading[1]:"Text note";}if(node.type==="group")return node.label||"Group";if(node.type==="link")try{return new URL(node.url).hostname;}catch(_){return "Link";}if(node.type==="file")return node.file.split("/").pop();return node.id;
+  if(isAICard(node))return parseAICard(node).title;if(node.type==="text"){const heading=node.text.match(/^#{1,2}\s+(.+)$/m);return heading?heading[1]:"Text note";}if(node.type==="group")return node.label||"Group";if(node.type==="link")try{return new URL(node.url).hostname;}catch(_){return "Link";}if(node.type==="file"){const subcanvasId=subcanvasIdFromNode(node);return subcanvasId?workspace.canvases[subcanvasId].title:node.file.split("/").pop();}return node.id;
 }
 function inputNodesForAICard(cardId,data=documentData){const byId=Object.fromEntries((data.nodes||[]).map(node=>[node.id,node]));return (data.edges||[]).filter(edge=>edge.toNode===cardId&&edge.label!=="AI output").map(edge=>byId[edge.fromNode]).filter(Boolean);}
 function nodeAIContent(node){if(node.type==="text")return node.text;if(node.type==="link")return node.url;if(node.type==="file")return [node.file,node.subpath].filter(Boolean).join(" ");if(node.type==="group")return node.label||"";return "";}
@@ -170,13 +230,18 @@ function renderNodes() {
       try { linkTitle = new URL(node.url).hostname.replace(/^www\./, ""); } catch (_) {}
       content.innerHTML = `<div class="node-kicker">LINK</div><h3>${escapeHTML(linkTitle)}</h3><p>Open this resource in a new tab.</p><a class="node-link" href="${safeURL(node.url)}" target="_blank" rel="noreferrer">${escapeHTML(node.url)} ↗</a>`;
     } else if (node.type === "file") {
-      if (/\.html?$/i.test(node.file)) {
+      const subcanvasId=subcanvasIdFromNode(node),subcanvas=subcanvasId&&workspace.canvases[subcanvasId];
+      if(subcanvas){
+        const children=Object.values(workspace.canvases).filter(record=>record.parentId===subcanvasId).length;element.classList.add("subcanvas-node");element.dataset.subcanvasId=subcanvasId;
+        content.innerHTML=`<div class="node-kicker">SUB-CANVAS · ZOOM PORTAL</div><h3>${escapeHTML(subcanvas.title)}</h3><p>${subcanvas.document.nodes.length} item${subcanvas.document.nodes.length===1?"":"s"}${children?` · ${children} nested`:""}</p><div class="portal-preview">${portalPreview(subcanvas.document)}</div><div class="portal-actions"><span>Double-click or zoom to 220%</span><button type="button" data-open-subcanvas>Open ↘</button></div>`;
+      } else if (/\.html?$/i.test(node.file)) {
         element.classList.add("html-widget");
         content.innerHTML = `<div class="node-kicker">LIVE HTML · SANDBOXED</div><iframe class="widget-frame" src="${safeFileURL(node.file)}" sandbox="allow-scripts" loading="lazy" referrerpolicy="no-referrer" title="${escapeHTML(node.file.split("/").pop())}"></iframe><div class="widget-shield"></div>`;
       } else content.innerHTML = `<div class="node-kicker">FILE</div><div class="file-preview">▧</div><h3>${escapeHTML(node.file.split("/").pop())}</h3><p>${escapeHTML(node.subpath || node.file)}</p>`;
     }
     element.addEventListener("pointerdown", event => nodePointerDown(event, node));
     const aiRun=$("[data-ai-run]",element);if(aiRun){aiRun.addEventListener("pointerdown",event=>event.stopPropagation());aiRun.addEventListener("click",event=>{event.stopPropagation();runAICard(node.id,{manual:true});});}
+    const portalButton=$("[data-open-subcanvas]",element);if(portalButton){portalButton.addEventListener("pointerdown",event=>event.stopPropagation());portalButton.addEventListener("click",event=>{event.stopPropagation();enterSubcanvas(element.dataset.subcanvasId);});element.addEventListener("dblclick",event=>{event.preventDefault();event.stopPropagation();enterSubcanvas(element.dataset.subcanvasId);});}
     element.addEventListener("click", event => {
       const anchor = event.target.closest("a");
       if (anchor) event.stopPropagation();
@@ -232,7 +297,7 @@ function renderEdges() {
 }
 
 function render() {
-  applyCamera(); renderEdges(); renderNodes(); renderInspector(); updateAssistantContext();
+  applyCamera(); renderEdges(); renderNodes(); renderInspector(); renderWorkspaceNavigation(); updateAssistantContext();
 }
 function applyCamera() {
   world.style.transform = `translate(${camera.x}px,${camera.y}px) scale(${camera.zoom})`;
@@ -247,7 +312,7 @@ function canvasPoint(clientX,clientY) {
   return { x:(clientX-box.left-camera.x)/camera.zoom, y:(clientY-box.top-camera.y)/camera.zoom };
 }
 function nodePointerDown(event,node) {
-  if (event.button !== 0 || event.target.closest("a")) return;
+  if (event.button !== 0 || event.target.closest("a,button")) return;
   event.stopPropagation();
   if (currentTool === "connect") {
     if (!connectSource) { connectSource=node.id; toast("Now choose a destination"); }
@@ -282,7 +347,7 @@ canvas.addEventListener("pointerdown", event => {
     event.preventDefault(); canvas.classList.add("panning");
     const start={x:event.clientX,y:event.clientY,cx:camera.x,cy:camera.y};
     const move=e=>{camera.x=start.cx+e.clientX-start.x;camera.y=start.cy+e.clientY-start.y;applyCamera();};
-    const up=()=>{canvas.classList.remove("panning");window.removeEventListener("pointermove",move)};
+    const up=()=>{canvas.classList.remove("panning");window.removeEventListener("pointermove",move);scheduleSave()};
     window.addEventListener("pointermove",move);window.addEventListener("pointerup",up,{once:true}); return;
   }
   if (event.target === canvas || event.target === world || event.target === nodeLayer) {
@@ -295,10 +360,13 @@ canvas.addEventListener("dblclick", event => {
 });
 canvas.addEventListener("wheel", event => {
   event.preventDefault();
+  const portal=event.target.closest?.(".subcanvas-node"),portalId=portal?.dataset.subcanvasId;
+  if(event.deltaY>0&&camera.zoom<=.205&&canvasRecord().parentId){leaveSubcanvas();return;}
   const rect=canvas.getBoundingClientRect(), sx=event.clientX-rect.left, sy=event.clientY-rect.top;
   const worldX=(sx-camera.x)/camera.zoom, worldY=(sy-camera.y)/camera.zoom;
   const factor=Math.exp(-event.deltaY*.0012), next=Math.max(.2,Math.min(2.5,camera.zoom*factor));
-  camera.x=sx-worldX*next; camera.y=sy-worldY*next; camera.zoom=next; applyCamera();
+  camera.x=sx-worldX*next; camera.y=sy-worldY*next; camera.zoom=next; applyCamera();scheduleSave();
+  if(event.deltaY<0&&portalId&&next>=2.2)enterSubcanvas(portalId);
 },{passive:false});
 
 function selectItem(kind,id) {
@@ -311,6 +379,7 @@ function setTool(tool) {
 }
 
 function addNode(kind, point) {
+  if(kind==="subcanvas")return createSubcanvas(point);
   const center = point || canvasPoint(canvas.getBoundingClientRect().left+canvas.clientWidth/2,canvas.getBoundingClientRect().top+canvas.clientHeight/2);
   const presets={
     note:{type:"text",color:"2",width:260,height:150,text:"# New thought\nStart writing here…"},
@@ -340,7 +409,7 @@ function renderInspector() {
     if (item.type==="text"&&isAICard(item)){const config=parseAICard(item);contentField=`<label class="field"><span>Operator name</span><input data-key="aiTitle" value="${escapeHTML(config.title)}"></label><label class="field"><span>AI instructions</span><textarea data-key="aiPrompt">${escapeHTML(config.prompt)}</textarea></label><div class="field-hint">Incoming connections become context. The generated note updates automatically when that context changes.</div>`;}
     else if (item.type==="text") contentField=`<label class="field"><span>Markdown</span><textarea data-key="text">${escapeHTML(item.text)}</textarea></label>`;
     if (item.type==="link") contentField=`<label class="field"><span>URL</span><input data-key="url" value="${escapeHTML(item.url)}"></label>`;
-    if (item.type==="file") contentField=`<label class="field"><span>File path</span><input data-key="file" value="${escapeHTML(item.file)}"></label><label class="field"><span>Subpath</span><input data-key="subpath" value="${escapeHTML(item.subpath||"")}"></label>`;
+    if (item.type==="file") {const subcanvasId=subcanvasIdFromNode(item),subcanvas=subcanvasId&&workspace.canvases[subcanvasId];contentField=subcanvas?`<label class="field"><span>Canvas title</span><input data-canvas-title="${escapeHTML(subcanvasId)}" value="${escapeHTML(subcanvas.title)}"></label><div class="field-hint">This portal is a standard JSON Canvas file node. Double-click it or zoom in to enter the nested canvas.</div><button type="button" class="button open-subcanvas-inspector" data-open-canvas="${escapeHTML(subcanvasId)}">Open sub-canvas ↘</button>`:`<label class="field"><span>File path</span><input data-key="file" value="${escapeHTML(item.file)}"></label><label class="field"><span>Subpath</span><input data-key="subpath" value="${escapeHTML(item.subpath||"")}"></label>`;}
     if (item.type==="group") contentField=`<label class="field"><span>Label</span><input data-key="label" value="${escapeHTML(item.label||"")}"></label><label class="field"><span>Background path</span><input data-key="background" value="${escapeHTML(item.background||"")}"></label>`;
     panel.innerHTML=`<div class="inspector-head"><h3>${item.type[0].toUpperCase()+item.type.slice(1)} node</h3><button class="close-inspector">×</button></div><form class="inspector-form">${contentField}<div class="field-row"><label class="field"><span>X</span><input type="number" data-key="x" value="${item.x}"></label><label class="field"><span>Y</span><input type="number" data-key="y" value="${item.y}"></label></div><div class="field-row"><label class="field"><span>Width</span><input type="number" data-key="width" value="${item.width}"></label><label class="field"><span>Height</span><input type="number" data-key="height" value="${item.height}"></label></div><label class="field"><span>Color preset</span><div class="color-list">${colorButtons}</div></label><button type="button" class="danger-btn">Delete node</button></form>`;
   } else {
@@ -354,6 +423,8 @@ function renderInspector() {
     if (input.tagName==="SELECT" && !input.value) delete item[key];
     scheduleSave(); renderNodes(); renderEdges(); renderMinimap(); scheduleChangedAICards(before);
   }));
+  const canvasTitleField=$("[data-canvas-title]",panel);if(canvasTitleField)canvasTitleField.addEventListener("input",()=>{const record=workspace.canvases[canvasTitleField.dataset.canvasTitle];if(!record)return;record.title=canvasTitleField.value||"Untitled canvas";scheduleSave();renderNodes();renderWorkspaceNavigation();});
+  const openCanvas=$("[data-open-canvas]",panel);if(openCanvas)openCanvas.onclick=()=>enterSubcanvas(openCanvas.dataset.openCanvas);
   $$(".color-choice",panel).forEach(button=>button.onclick=()=>{item.color=button.dataset.color;scheduleSave();render();});
   $(".danger-btn",panel).onclick=deleteSelection;
 }
@@ -361,6 +432,9 @@ function sideOptions(value) { return ["","top","right","bottom","left"].map(s=>`
 function deleteSelection() {
   if (!selected) return;const before=aiCardSignatures();
   if (selected.kind==="node") {
+    const node=documentData.nodes.find(item=>item.id===selected.id),subcanvasId=subcanvasIdFromNode(node);
+    if(subcanvasId&&!confirm(`Delete “${workspace.canvases[subcanvasId].title}” and every canvas nested inside it?`))return;
+    if(subcanvasId)deleteCanvasTree(subcanvasId);
     documentData.nodes=documentData.nodes.filter(n=>n.id!==selected.id);
     documentData.edges=(documentData.edges||[]).filter(e=>e.fromNode!==selected.id&&e.toNode!==selected.id);
   } else documentData.edges=documentData.edges.filter(e=>e.id!==selected.id);
@@ -373,11 +447,11 @@ function updateCounts() {
   [["goalCount","1"],["habitCount","4"],["projectCount","6"],["ideaCount","2"]].forEach(([id,c])=>$("#"+id).textContent=nodes.filter(n=>n.color===c).length);
 }
 function renderMinimap() {
-  const mini=$("#miniWorld"); if (!mini || !documentData.nodes?.length) return;
+  const mini=$("#miniWorld"),view=$("#miniViewport");if(!mini)return;if(!documentData.nodes?.length){mini.innerHTML="";view.style.cssText="display:none";return;}view.style.display="";
   const bounds=getBounds(), pad=8, mw=128-pad*2,mh=82-pad*2, scale=Math.min(mw/bounds.width,mh/bounds.height,.12);
   const ox=pad+(mw-bounds.width*scale)/2-bounds.minX*scale, oy=pad+(mh-bounds.height*scale)/2-bounds.minY*scale;
   mini.innerHTML=documentData.nodes.map(n=>`<i class="mini-node ${n.type==="group"?"group":""}" style="left:${ox+n.x*scale}px;top:${oy+n.y*scale}px;width:${Math.max(2,n.width*scale)}px;height:${Math.max(2,n.height*scale)}px;background-color:${n.type==="group"?"transparent":colorValue(n.color)}"></i>`).join("");
-  const view=$("#miniViewport"), worldLeft=-camera.x/camera.zoom, worldTop=-camera.y/camera.zoom;
+  const worldLeft=-camera.x/camera.zoom, worldTop=-camera.y/camera.zoom;
   view.style.cssText=`left:${ox+worldLeft*scale}px;top:${oy+worldTop*scale}px;width:${canvas.clientWidth/camera.zoom*scale}px;height:${canvas.clientHeight/camera.zoom*scale}px`;
 }
 function getBounds() {
@@ -440,14 +514,14 @@ function applyCanvasTheme(theme) {
   localStorage.setItem("orbit-canvas-theme",value);
 }
 function canvasSummary() {
-  const nodes=(documentData.nodes||[]).filter(node=>node.type!=="group"), counts={goals:0,habits:0,projects:0,ideas:0,widgets:0};
-  nodes.forEach(node=>{if(node.color==="1")counts.goals++;if(node.color==="4")counts.habits++;if(node.color==="6")counts.projects++;if(node.color==="2")counts.ideas++;if(node.type==="file"&&/\.html?$/i.test(node.file))counts.widgets++;});
+  const nodes=(documentData.nodes||[]).filter(node=>node.type!=="group"), counts={goals:0,habits:0,projects:0,ideas:0,widgets:0,subcanvases:0};
+  nodes.forEach(node=>{if(node.color==="1")counts.goals++;if(node.color==="4")counts.habits++;if(node.color==="6")counts.projects++;if(node.color==="2")counts.ideas++;if(node.type==="file"&&/\.html?$/i.test(node.file))counts.widgets++;if(subcanvasIdFromNode(node))counts.subcanvases++;});
   const openTasks=nodes.filter(n=>n.type==="text").reduce((total,n)=>total+(n.text.match(/- \[ \]/g)||[]).length,0);
-  return {nodes:nodes.length,edges:(documentData.edges||[]).length,openTasks,...counts};
+  return {canvasId:currentCanvasId,canvasTitle:canvasRecord().title,nodes:nodes.length,edges:(documentData.edges||[]).length,openTasks,...counts};
 }
 function updateAssistantContext() {
   const context=$("#aiContext");if(!context)return;const s=canvasSummary();
-  context.innerHTML=`READING <b>${s.nodes} nodes</b> · <b>${s.edges} links</b> · <b>${s.openTasks} open tasks</b> · <b>${s.widgets} widgets</b>`;
+  context.innerHTML=`READING <b>${escapeHTML(s.canvasTitle)}</b> · <b>${s.nodes} nodes</b> · <b>${s.edges} links</b> · <b>${s.openTasks} tasks</b> · <b>${s.subcanvases} portals</b>`;
 }
 function setAssistantOpen(open) {
   const panel=$("#aiPanel");panel.classList.toggle("open",open);panel.setAttribute("aria-hidden",String(!open));panel.inert=!open;updateAssistantContext();if(open)setTimeout(()=>$("#aiPrompt").focus(),180);
@@ -473,6 +547,7 @@ function runLocalAssistant(prompt) {
     } else if(/calm|ocean|cool|teal/.test(lower)) {applyCanvasOperations([{type:"theme.set",theme:"calm"}]);response="Applied the calm teal canvas theme.";
     } else if(/contrast|accessible/.test(lower)) {applyCanvasOperations([{type:"theme.set",theme:"contrast"}]);response="Applied the high-contrast canvas theme.";
     } else if(/reset.*(?:theme|style)|default (?:theme|style)/.test(lower)) {applyCanvasOperations([{type:"theme.set",theme:"default"}]);response="Reset the canvas styling to its default theme.";
+    } else if(/(?:add|create).*(?:sub.?canvas|nested canvas)/.test(lower)){createSubcanvas();response="Created a nested canvas portal. Double-click it or zoom into it to enter.";
     } else if(/(?:add|create).*(?:3d|three|html|widget)/.test(lower)) {
       const center=canvasPoint(canvas.getBoundingClientRect().left+canvas.clientWidth/2,canvas.getBoundingClientRect().top+canvas.clientHeight/2),node={id:uid("node"),type:"file",x:Math.round(center.x-240),y:Math.round(center.y-145),width:480,height:290,color:"5",file:"widgets/focus-orbit.html"};applyCanvasOperations([{type:"node.add",node}]);response="Added a sandboxed Three.js file node. It is still a standard JSON Canvas file node pointing to an HTML file.";
     } else {
@@ -534,7 +609,7 @@ function parseProviderJSON(content) {
 async function runRemoteAssistant(prompt) {
   assistantMessage(prompt,"user");const loading=assistantMessage("Thinking…");loading.classList.add("loading");const send=$("#aiForm button");send.disabled=true;
   try{
-    const box=canvas.getBoundingClientRect(),center=canvasPoint(box.left+box.width/2,box.top+box.height/2),context=`Current viewport center: ${Math.round(center.x)}, ${Math.round(center.y)}.\nCurrent JSON Canvas:\n${JSON.stringify(documentData)}`;
+    const box=canvas.getBoundingClientRect(),center=canvasPoint(box.left+box.width/2,box.top+box.height/2),context=`Current canvas: ${canvasTrail().map(record=>record.title).join(" / ")}\nCurrent viewport center: ${Math.round(center.x)}, ${Math.round(center.y)}.\nCurrent JSON Canvas:\n${JSON.stringify(documentData)}`;
     const messages=[{role:"system",content:assistantSystemPrompt()},...aiConversation.slice(-8),{role:"user",content:`${prompt}\n\n${context}`}];
     const response=await providerFetch(aiSettings,"/chat/completions",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({model:aiSettings.model,messages,temperature:.2,max_tokens:1800})}),body=await response.json(),content=body.choices?.[0]?.message?.content,plan=parseProviderJSON(content);
     validateCanvasOperations(plan.operations);loading.remove();assistantProposal(plan.message,plan.operations);aiConversation.push({role:"user",content:prompt},{role:"assistant",content:JSON.stringify(plan)});
@@ -582,11 +657,11 @@ async function runAICard(cardId,{manual=false}={}) {
   finally{state.running=false;const pending=state.pending;state.pending=false;aiCardRuntime.set(cardId,state);renderNodes();if(pending)scheduleAICard(cardId,250);}
 }
 
-window.orbitCanvas={getDocument:()=>clone(documentData),getSummary:canvasSummary,validateOperations:validateCanvasOperations,applyOperations:applyCanvasOperations,runAICard};
+window.orbitCanvas={getDocument:()=>clone(documentData),getWorkspace:()=>clone(workspace),getCurrentCanvas:()=>({id:currentCanvasId,title:canvasRecord().title,trail:canvasTrail().map(record=>({id:record.id,title:record.title}))}),getSummary:canvasSummary,validateOperations:validateCanvasOperations,applyOperations:applyCanvasOperations,runAICard,createSubcanvas,switchCanvas};
 applyCanvasTheme(localStorage.getItem("orbit-canvas-theme")||"default");updateProviderUI();
 
 $$("[data-add]").forEach(button=>button.onclick=()=>button.dataset.add==="ai-note"?openAINoteDialog():addNode(button.dataset.add));
-$("#newGroup").onclick=()=>addNode("group");
+$("#newGroup").onclick=()=>addNode("group");$("#newCanvas").onclick=()=>createSubcanvas();
 $$(".nav-item[data-filter]").forEach(button=>button.onclick=()=>{activeFilter=button.dataset.filter;$$(".nav-item[data-filter]").forEach(b=>b.classList.toggle("active",b===button));renderNodes();renderEdges();});
 $$(".tool").forEach(button=>button.onclick=()=>{const tool=button.dataset.tool;if(tool==="note")setTool("note");else setTool(tool);});
 $("#zoomIn").onclick=()=>setZoom(camera.zoom*1.2);$("#zoomOut").onclick=()=>setZoom(camera.zoom/1.2);$("#zoomLabel").onclick=()=>setZoom(1);$("#fitView").onclick=fitView;
@@ -603,13 +678,15 @@ $("#toggleAIKey").onclick=()=>{const input=$("#aiAPIKey"),show=input.type==="pas
 $("#aiSettingsForm").onsubmit=event=>{event.preventDefault();if(!event.currentTarget.reportValidity())return;try{const settings=settingsFromForm();if(!settings.model||!settings.apiKey)throw new Error("Model and API key are required");persistAISettings(settings);$("#aiSettingsDialog").close();toast(`Connected to ${settings.model}`);}catch(error){setSettingsResult(error.message,"error");}};
 $("#testAIProvider").onclick=async()=>{const form=$("#aiSettingsForm");if(!form.reportValidity())return;const button=$("#testAIProvider");try{const settings=settingsFromForm();button.disabled=true;setSettingsResult("Testing direct browser connection…");setSettingsResult(await testAIProvider(settings),"success");}catch(error){setSettingsResult(error.message,"error");}finally{button.disabled=false;}};
 $("#clearAIProvider").onclick=()=>{persistAISettings({...aiSettings,apiKey:"",rememberKey:false});localStorage.removeItem(AI_SECRET_KEY);sessionStorage.removeItem(AI_SECRET_KEY);$("#aiSettingsDialog").close();toast("Using local canvas tools");};
-$("#canvasTitle").value=localStorage.getItem("orbit-title")||"Life OS — Summer";$("#canvasTitle").oninput=e=>localStorage.setItem("orbit-title",e.target.value);
-$("#resetDemo").onclick=()=>{if(confirm("Reset the canvas to the demo? Your local changes will be replaced.")){documentData=clone(demoCanvas);selected=null;scheduleSave();render();fitView();toast("Demo restored");}};
+$("#canvasTitle").value=canvasRecord().title;$("#canvasTitle").oninput=e=>{canvasRecord().title=e.target.value||"Untitled canvas";scheduleSave();renderWorkspaceNavigation();};
+$("#resetDemo").onclick=()=>{if(confirm("Reset the whole space to the demo? Every nested canvas and local change will be replaced.")){workspace=freshWorkspace(clone(demoCanvas));currentCanvasId=workspace.rootId;documentData=workspace.canvases[currentCanvasId].document;camera={x:80,y:55,zoom:.78};selected=null;$("#canvasTitle").value=canvasRecord().title;scheduleSave();render();fitView();toast("Demo space restored");}};
 $("#minimap").onclick=fitView;
 
 window.addEventListener("keydown",event=>{
   if (["INPUT","TEXTAREA","SELECT"].includes(event.target.tagName)) return;
   if(event.code==="Space"){spaceDown=true;event.preventDefault();}
+  if(event.altKey&&event.key==="ArrowUp"&&canvasRecord().parentId){event.preventDefault();leaveSubcanvas();return;}
+  if(event.key==="Enter"&&selected?.kind==="node"){const node=documentData.nodes.find(item=>item.id===selected.id),subcanvasId=subcanvasIdFromNode(node);if(subcanvasId){event.preventDefault();enterSubcanvas(subcanvasId);return;}}
   if((event.key==="Delete"||event.key==="Backspace")&&selected)deleteSelection();
   if(event.key.toLowerCase()==="v")setTool("select");if(event.key.toLowerCase()==="h")setTool("pan");if(event.key.toLowerCase()==="c")setTool("connect");if(event.key.toLowerCase()==="n")setTool("note");
   if(event.key==="0")fitView();if(event.key==="+"||event.key==="=")setZoom(camera.zoom*1.2);if(event.key==="-")setZoom(camera.zoom/1.2);
@@ -617,6 +694,7 @@ window.addEventListener("keydown",event=>{
 });
 window.addEventListener("keyup",event=>{if(event.code==="Space")spaceDown=false;});
 window.addEventListener("resize",()=>{applyCamera();});
+window.addEventListener("beforeunload",persistWorkspace);
 
 render();
 setTimeout(fitView,50);

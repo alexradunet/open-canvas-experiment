@@ -9,7 +9,8 @@ A small, standalone proof of concept for a life-management app whose primary int
 ## What the PoC includes
 
 - Infinite canvas with pan, centered zoom, fit-to-view, and minimap
-- Draggable and resizable text, link, file, and group nodes
+- Nested sub-canvases with live previews, breadcrumbs, switching, and infinite zoom navigation
+- Draggable and resizable text, link, file, group, and sub-canvas portal nodes
 - Goals, projects, habits, ideas, and notes represented with standard JSON Canvas fields
 - Connect mode with editable edges
 - Markdown cards and task checkboxes
@@ -40,6 +41,8 @@ Then open <http://localhost:4173>.
 |---|---|
 | Pan | Hold `Space` and drag, middle-drag, or use the hand tool |
 | Zoom | Mouse wheel, `+`, or `-` |
+| Enter sub-canvas | Double-click its portal, choose **Open**, or zoom over it past 220% |
+| Return to parent | Zoom all the way out, choose a breadcrumb, or press `Alt + ↑` |
 | Fit view | `0` |
 | Add note | Double-click empty canvas or press `N` and click |
 | Connect | Press `C`, then select two nodes |
@@ -76,7 +79,9 @@ By default, the key lives in `sessionStorage` for the current tab. Enabling **Re
 
 ## Data model
 
-Exported files use only the JSON Canvas 1.0 top-level `nodes` and `edges` arrays. Life-management meaning is encoded portably:
+Each canvas remains a JSON Canvas 1.0 document with only the top-level `nodes` and `edges` arrays. A sub-canvas portal is a standard file node pointing to `canvases/<id>.canvas`; Orbit's browser-local workspace sidecar tracks the hierarchy, titles, and per-canvas camera positions without adding private fields to any canvas document. The **Export .canvas** action exports the currently open canvas.
+
+Life-management meaning is encoded portably:
 
 - text and Markdown task lists in text nodes
 - preset canvas colors as lightweight categories

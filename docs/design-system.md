@@ -38,6 +38,8 @@ Instead, Orbit adopts the system's semantic tokens and principles while applying
 - crisp outlines and tonal layers instead of elevation shadows
 - ochre 4×4 corner notches
 - self-hosted assets
+- earth-toned sub-canvas portals with low-detail miniature maps
+- native View Transition animations when entering or leaving nested canvases
 
 This keeps the design system reusable without creating a large override sheet.
 

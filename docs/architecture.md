@@ -22,6 +22,19 @@ A practical model is:
 
 For sync, use immutable operations and a document revision rather than writing whole files from several clients concurrently.
 
+## Nested canvases and infinite zoom
+
+A large space can contain an arbitrary hierarchy of smaller canvases without extending JSON Canvas:
+
+- every level is an independent, valid JSON Canvas 1.0 document;
+- a parent represents a child with a standard `file` node whose path is `canvases/<id>.canvas`;
+- Orbit renders those resolvable file nodes as portal cards with live miniature previews;
+- double-clicking, choosing **Open**, or zooming over a portal past 220% enters it;
+- zooming out at the minimum scale returns to the parent, while breadcrumbs and the canvas list allow direct switching;
+- parent ID, portal node ID, title, and camera state live in a workspace sidecar rather than private node fields.
+
+The current static prototype persists that workspace wrapper in `localStorage`. A filesystem-backed application should store the root `.canvas`, child files under `canvases/`, and a small sidecar manifest. This preserves direct interoperability: another JSON Canvas editor can still open every level independently, even if it does not understand Orbit's hierarchy navigation.
+
 ## Suggested source layout
 
 ```text
