@@ -49,6 +49,8 @@ The file-canonical storage model (ADR-0001) is the adopted direction but is not 
 ```text
 index.html                  Static application shell, dialogs, templates, landmarks
 main.js                     Ordered ES-module entry point and offline registration
+server.mjs                   Dependency-free local static server
+server.test.mjs              Static server behavior and traversal tests
 app.js                      Canvas engine, workspace, JD, tasks/Today, AI, import/export
 offline/register.js         Progressive Service Worker registration
 sw.js                       Versioned same-origin application-shell cache

@@ -31,13 +31,13 @@ A small, standalone proof of concept for a local-first life-management app whose
 
 ## Run locally
 
-Serve the directory with any static file server:
+Start the dependency-free Node server:
 
 ```bash
-python3 -m http.server 4173
+node server.mjs
 ```
 
-Then open <http://localhost:4173>. Service Workers are available on localhost, so after the first successful load the application shell also works offline.
+Then open <http://localhost:4173>. Set `PORT` or `HOST` to override the defaults, for example `PORT=4187 node server.mjs`. Service Workers are available on localhost, so after the first successful load the application shell also works offline.
 
 ## Controls
 
