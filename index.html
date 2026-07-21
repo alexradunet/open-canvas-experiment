@@ -33,7 +33,7 @@
         <button class="button assistant-button" id="assistantButton"><span>✦</span> Ask Orbit</button>
         <button class="button ghost" id="importButton">Import</button>
         <button class="button primary" id="exportButton">Export .canvas</button>
-        <input type="file" id="fileInput" accept=".canvas,.json,application/json" hidden />
+        <input type="file" id="fileInput" accept=".canvas,.orbit,.json,application/json" hidden />
       </nav>
     </header>
 
@@ -53,7 +53,7 @@
       </section>
 
       <nav aria-label="Canvas hierarchy">
-        <div class="section-heading"><p class="section-label">CANVASES</p><button class="tiny-btn" id="newCanvas" title="Add sub-canvas" aria-label="Add sub-canvas">＋</button></div>
+        <div class="section-heading"><p class="section-label">CANVASES</p><span class="section-actions"><button class="tiny-btn jd-button" id="johnnyDecimalState" title="Johnny Decimal index" aria-label="Open Johnny Decimal index">JD</button><button class="tiny-btn" id="newCanvas" title="Add sub-canvas" aria-label="Add sub-canvas">＋</button></span></div>
         <div id="canvasList"></div>
       </nav>
 
@@ -68,6 +68,7 @@
 
       <section class="sidebar-bottom" aria-label="Help and information">
         <div class="tip"><span>↘</span><div><b>Infinite zoom</b><p>Double-click a sub-canvas, or zoom into it past 220%. Zoom all the way out to return.</p></div></div>
+        <button class="nav-item" id="exportWorkspaceButton"><span>⇩</span>Export whole space</button>
         <button class="nav-item" id="resetDemo"><span>↺</span>Reset demo</button>
         <a href="https://jsoncanvas.org/spec/1.0/" target="_blank" rel="noreferrer" class="spec-link">JSON Canvas 1.0 <span>↗</span></a>
       </section>
@@ -125,6 +126,28 @@
       <footer id="aiProviderStatus"><i></i> Local mode — canvas data stays in this browser</footer>
     </aside>
   </div>
+
+  <dialog class="settings-dialog jd-dialog" id="johnnyDecimalDialog">
+    <form id="johnnyDecimalForm">
+      <header><div><span>#</span><div><b>Johnny Decimal index</b><small>Areas → categories → numbered items</small></div></div><button type="button" id="closeJohnnyDecimal" aria-label="Close">×</button></header>
+      <div class="settings-body">
+        <section class="jd-lookup" aria-labelledby="jdLookupHeading">
+          <b id="jdLookupHeading">Go to an ID</b>
+          <div class="jd-lookup-row"><input id="jdLookup" list="jdLookupList" placeholder="11.03" autocomplete="off"><datalist id="jdLookupList"></datalist><button type="button" class="button ghost" id="goToJD">Go</button></div>
+          <div class="settings-test" id="jdLookupResult" role="status"></div>
+        </section>
+        <hr>
+        <section aria-labelledby="jdCreateHeading">
+          <div class="jd-section-heading"><b id="jdCreateHeading">Create <span id="jdKindLabel">entry</span></b><small>IDs are validated and sorted automatically.</small></div>
+          <label class="settings-field"><span>Parent canvas</span><select id="jdParent" required></select></label>
+          <div class="jd-field-row"><label class="settings-field"><span>Johnny Decimal ID</span><input id="jdCode" required></label><label class="settings-field"><span>Title</span><input id="jdTitle" required placeholder="Finance"></label></div>
+          <label class="settings-field" id="jdItemFormatField" hidden><span>Item format</span><select id="jdItemFormat"><option value="canvas">Nested canvas</option><option value="note">Text note</option></select></label>
+          <div class="settings-test" id="jdCreateResult" role="status"></div>
+        </section>
+      </div>
+      <footer><button type="button" class="button ghost" id="exportJDWorkspace">Export whole space</button><span></span><button type="button" class="button ghost" id="cancelJohnnyDecimal">Cancel</button><button type="submit" class="button primary" id="createJDEntry">Create entry</button></footer>
+    </form>
+  </dialog>
 
   <dialog class="settings-dialog ai-note-dialog" id="aiNoteDialog">
     <form id="aiNoteForm">

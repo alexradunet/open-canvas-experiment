@@ -35,6 +35,20 @@ A large space can contain an arbitrary hierarchy of smaller canvases without ext
 
 The current static prototype persists that workspace wrapper in `localStorage`. A filesystem-backed application should store the root `.canvas`, child files under `canvases/`, and a small sidecar manifest. This preserves direct interoperability: another JSON Canvas editor can still open every level independently, even if it does not understand Orbit's hierarchy navigation.
 
+### Johnny Decimal projection
+
+Johnny Decimal is implemented as a constrained projection of the same hierarchy rather than a new node type:
+
+- the root canvas is the index;
+- area records validate ranges such as `10-19`;
+- category records must fall inside their area's range, such as `11`;
+- items use category-scoped IDs from `11.01` through `11.99`;
+- area, category, and complex-item canvases are ordinary file-node portals with readable paths;
+- simple item notes encode their ID in a Markdown heading and an inert `<!-- orbit:jd ... -->` comment;
+- a sidecar index rejects duplicates, provides direct lookup, and orders the canvas tree numerically.
+
+A whole-space `.orbit.json` backup contains that sidecar plus all of the independent JSON Canvas documents. Single `.canvas` import/export remains available for interoperability.
+
 ## Suggested source layout
 
 ```text

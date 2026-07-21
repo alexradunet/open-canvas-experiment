@@ -61,13 +61,18 @@ function loadDocument() {
   return clone(demoCanvas);
 }
 function freshWorkspace(document=loadDocument()){
-  return {version:1,rootId:ROOT_CANVAS_ID,activeId:ROOT_CANVAS_ID,canvases:{[ROOT_CANVAS_ID]:{id:ROOT_CANVAS_ID,title:localStorage.getItem("orbit-title")||"Life OS — Summer",parentId:null,portalNodeId:null,document,camera:{x:80,y:55,zoom:.78}}}};
+  return {version:1,rootId:ROOT_CANVAS_ID,activeId:ROOT_CANVAS_ID,johnnyDecimal:{enabled:false,entries:{}},canvases:{[ROOT_CANVAS_ID]:{id:ROOT_CANVAS_ID,title:localStorage.getItem("orbit-title")||"Life OS — Summer",parentId:null,portalNodeId:null,path:null,document,camera:{x:80,y:55,zoom:.78}}}};
+}
+function normalizeWorkspace(parsed){
+  parsed.johnnyDecimal ||= {enabled:false,entries:{}};parsed.johnnyDecimal.entries ||= {};
+  for(const record of Object.values(parsed.canvases)){if(record.id===parsed.rootId){record.path=null;continue;}if(!record.path){const parent=parsed.canvases[record.parentId],portal=parent?.document.nodes?.find(node=>node.id===record.portalNodeId);record.path=portal?.file||`canvases/${record.id}.canvas`;}}
+  return parsed;
 }
 function loadWorkspace(){
   try{
     const parsed=JSON.parse(localStorage.getItem(WORKSPACE_KEY)||"null"),canvases=parsed?.canvases;
     if(parsed?.version===1&&canvases&&typeof canvases==="object"&&Object.keys(canvases).length&&Object.values(canvases).every(record=>record&&typeof record.id==="string"&&typeof record.title==="string"&&isCanvas(record.document))){
-      parsed.rootId=canvases[parsed.rootId]?parsed.rootId:Object.keys(canvases)[0];parsed.activeId=canvases[parsed.activeId]?parsed.activeId:parsed.rootId;return parsed;
+      parsed.rootId=canvases[parsed.rootId]?parsed.rootId:Object.keys(canvases)[0];parsed.activeId=canvases[parsed.activeId]?parsed.activeId:parsed.rootId;return normalizeWorkspace(parsed);
     }
   }catch(_){}
   return freshWorkspace();
@@ -90,7 +95,7 @@ function isCanvas(data) {
 }
 
 function saveCurrentCanvasState(){
-  const record=workspace.canvases[currentCanvasId];if(!record)return;record.document=documentData;record.camera={...camera};const title=$("#canvasTitle")?.value.trim();if(title)record.title=title;
+  const record=workspace.canvases[currentCanvasId];if(!record)return;record.document=documentData;record.camera={...camera};const value=$("#canvasTitle")?.value.trim();if(value){if(record.jdCode){const formatted=formatJDCode(record.jdCode),title=(value.startsWith(formatted)?value.slice(formatted.length).replace(/^\s*(?:—|-)\s*/,""):value)||record.jdTitle||"Untitled";record.jdTitle=title;record.title=jdDisplayTitle(record.jdCode,title);const entry=jdEntries()[record.jdCode];if(entry)entry.title=title;}else record.title=value;}
 }
 function persistWorkspace(){
   saveCurrentCanvasState();workspace.activeId=currentCanvasId;localStorage.setItem(WORKSPACE_KEY,JSON.stringify(workspace));localStorage.setItem("orbit-canvas-v1",JSON.stringify(workspace.canvases[workspace.rootId].document));localStorage.setItem("orbit-title",workspace.canvases[workspace.rootId].title);
@@ -118,7 +123,7 @@ function safeFileURL(value="") {
   return encodeURI(path).replace(/#/g,"%23");
 }
 function subcanvasIdFromNode(node){
-  if(node?.type!=="file")return null;const match=node.file.match(/^canvases\/([^/]+)\.canvas$/);return match&&workspace.canvases[match[1]]?match[1]:null;
+  if(node?.type!=="file")return null;const record=Object.values(workspace.canvases).find(item=>item.path===node.file);return record?.id||null;
 }
 function canvasRecord(id=currentCanvasId){return workspace.canvases[id];}
 function canvasDepth(id){
@@ -127,15 +132,45 @@ function canvasDepth(id){
 function canvasTrail(id=currentCanvasId){
   const trail=[],seen=new Set();while(workspace.canvases[id]&&!seen.has(id)){seen.add(id);trail.unshift(workspace.canvases[id]);id=workspace.canvases[id].parentId;}return trail;
 }
+function canonicalJDCode(value=""){return String(value).trim().replace(/[–—]/g,"-");}
+function formatJDCode(code=""){return canonicalJDCode(code).replace(/^(\d{2})-(\d{2})$/,"$1–$2");}
+function jdDisplayTitle(code,title){return `${formatJDCode(code)} — ${String(title).trim()}`;}
+function slug(value){return String(value).toLowerCase().normalize("NFKD").replace(/[\u0300-\u036f]/g,"").replace(/[^a-z0-9]+/g,"-").replace(/^-|-$/g,"").slice(0,54)||"canvas";}
+function jdEntries(){return workspace.johnnyDecimal?.entries||{};}
+function jdCodeFromNode(node){return node?.type==="text"?canonicalJDCode(node.text.match(/<!--\s*orbit:jd\s+([^\s]+)\s*-->/i)?.[1]||""):"";}
+function jdEntryForCanvas(canvasId){return Object.values(jdEntries()).find(entry=>entry.canvasId===canvasId)||null;}
+function jdContainerKind(canvasId){if(canvasId===workspace.rootId)return "root";return jdEntryForCanvas(canvasId)?.kind||null;}
+function jdChildKind(canvasId){return {root:"area",area:"category",category:"item"}[jdContainerKind(canvasId)]||null;}
+function jdSortValue(code=""){const value=canonicalJDCode(code);if(/^\d{2}-\d{2}$/.test(value))return Number(value.slice(0,2))*1000;if(/^\d{2}$/.test(value))return Number(value)*1000+1;if(/^\d{2}\.\d{2}$/.test(value))return Number(value.slice(0,2))*1000+Number(value.slice(3))+2;return 999999;}
+function validateJDCode(code,parentCanvasId){
+  code=canonicalJDCode(code);const kind=jdChildKind(parentCanvasId),parent=jdEntryForCanvas(parentCanvasId);
+  if(!kind)throw new Error("Choose the root index, an area, or a category as the parent.");
+  if(jdEntries()[code])throw new Error(`${formatJDCode(code)} is already in use.`);
+  if(kind==="area"){const match=code.match(/^(\d{2})-(\d{2})$/),start=match&&Number(match[1]),end=match&&Number(match[2]);if(!match||start%10||end!==start+9)throw new Error("Area IDs must be ranges such as 10-19.");}
+  if(kind==="category"){const number=Number(code),range=canonicalJDCode(parent.code).split("-").map(Number);if(!/^\d{2}$/.test(code)||number<range[0]||number>range[1])throw new Error(`Choose a category from ${formatJDCode(parent.code)}.`);}
+  if(kind==="item"&&!new RegExp(`^${parent.code.replace(/[.*+?^${}()|[\]\\]/g,"\\$&")}\\.(?:0[1-9]|[1-9]\\d)$`).test(code))throw new Error(`Item IDs must run from ${parent.code}.01 to ${parent.code}.99.`);
+  return {code,kind};
+}
+function suggestJDCode(parentCanvasId){
+  const kind=jdChildKind(parentCanvasId),used=new Set(Object.keys(jdEntries()).map(canonicalJDCode));
+  if(kind==="area"){for(const start of [10,20,30,40,50,60,70,80,90,0]){const code=`${String(start).padStart(2,"0")}-${String(start+9).padStart(2,"0")}`;if(!used.has(code))return code;}}
+  const parent=jdEntryForCanvas(parentCanvasId);if(kind==="category"){const [start,end]=canonicalJDCode(parent.code).split("-").map(Number);for(let number=start;number<=end;number++){const code=String(number).padStart(2,"0");if(!used.has(code))return code;}}
+  if(kind==="item")for(let number=1;number<=99;number++){const code=`${parent.code}.${String(number).padStart(2,"0")}`;if(!used.has(code))return code;}
+  return "";
+}
 function portalPreview(document){
   const nodes=(document.nodes||[]).slice(0,28);if(!nodes.length)return '<span class="portal-empty">Empty canvas · open to begin</span>';
   const minX=Math.min(...nodes.map(node=>node.x)),minY=Math.min(...nodes.map(node=>node.y)),maxX=Math.max(...nodes.map(node=>node.x+node.width)),maxY=Math.max(...nodes.map(node=>node.y+node.height)),width=Math.max(1,maxX-minX),height=Math.max(1,maxY-minY),scale=Math.min(210/width,82/height);
   return nodes.map(node=>`<i class="${node.type==="group"?"group":""}" style="left:${(node.x-minX)*scale}px;top:${(node.y-minY)*scale}px;width:${Math.max(2,node.width*scale)}px;height:${Math.max(2,node.height*scale)}px;${node.type==="group"?"":`background:${colorValue(node.color)}`}" ></i>`).join("");
 }
+function orderedCanvasRecords(){
+  const records=Object.values(workspace.canvases),result=[],seen=new Set(),compare=(a,b)=>(jdSortValue(a.jdCode)-jdSortValue(b.jdCode))||a.title.localeCompare(b.title),visit=record=>{if(!record||seen.has(record.id))return;seen.add(record.id);result.push(record);records.filter(item=>item.parentId===record.id).sort(compare).forEach(visit);};visit(workspace.canvases[workspace.rootId]);records.sort(compare).forEach(visit);return result;
+}
 function renderWorkspaceNavigation(){
   const breadcrumbs=$("#canvasBreadcrumbs"),list=$("#canvasList");
   if(breadcrumbs)breadcrumbs.innerHTML=canvasTrail().map((record,index,trail)=>`<button data-canvas-switch="${escapeHTML(record.id)}" ${index===trail.length-1?'aria-current="page"':''}>${escapeHTML(record.title)}</button>${index<trail.length-1?"<span>›</span>":""}`).join("");
-  if(list)list.innerHTML=Object.values(workspace.canvases).map(record=>`<button class="nav-item canvas-list-item ${record.id===currentCanvasId?"active":""}" data-canvas-switch="${escapeHTML(record.id)}" style="--canvas-depth:${canvasDepth(record.id)}"><span>${record.id===workspace.rootId?"◫":"↳"}</span><b>${escapeHTML(record.title)}</b><em>${(record.document.nodes||[]).length}</em></button>`).join("");
+  if(list)list.innerHTML=orderedCanvasRecords().map(record=>`<button class="nav-item canvas-list-item ${record.id===currentCanvasId?"active":""}" data-canvas-switch="${escapeHTML(record.id)}" style="--canvas-depth:${canvasDepth(record.id)}"><span>${record.id===workspace.rootId?"◫":record.jdCode?"#":"↳"}</span><b>${escapeHTML(record.title)}</b><em>${(record.document.nodes||[]).length}</em></button>`).join("");
+  $("#johnnyDecimalState")?.classList.toggle("active",Boolean(workspace.johnnyDecimal.enabled));
   $$('[data-canvas-switch]').forEach(button=>button.onclick=()=>switchCanvas(button.dataset.canvasSwitch,{direction:"switch"}));
 }
 function activateCanvas(id,{focusNodeId=null,fit=false}={}){
@@ -153,9 +188,33 @@ function leaveSubcanvas(){
 function focusNode(node,zoom=1.05){camera.zoom=zoom;camera.x=(canvas.clientWidth-node.width*zoom)/2-node.x*zoom;camera.y=(canvas.clientHeight-node.height*zoom)/2-node.y*zoom;applyCamera();}
 function createSubcanvas(point){
   const center=point||canvasPoint(canvas.getBoundingClientRect().left+canvas.clientWidth/2,canvas.getBoundingClientRect().top+canvas.clientHeight/2),id=uid("canvas"),nodeId=uid("node"),siblings=Object.values(workspace.canvases).filter(record=>record.parentId===currentCanvasId).length,title=`New canvas ${siblings+1}`,node={id:nodeId,type:"file",x:Math.round(center.x-180),y:Math.round(center.y-125),width:360,height:250,color:"3",file:`canvases/${id}.canvas`};
-  workspace.canvases[id]={id,title,parentId:currentCanvasId,portalNodeId:nodeId,document:{nodes:[],edges:[]},camera:null};documentData.nodes.push(node);selected={kind:"node",id:node.id};shell.classList.add("inspector-open");scheduleSave();render();toast("Sub-canvas created · double-click or zoom into it");return node;
+  workspace.canvases[id]={id,title,parentId:currentCanvasId,portalNodeId:nodeId,path:node.file,document:{nodes:[],edges:[]},camera:null};documentData.nodes.push(node);selected={kind:"node",id:node.id};shell.classList.add("inspector-open");scheduleSave();render();toast("Sub-canvas created · double-click or zoom into it");return node;
 }
-function deleteCanvasTree(id){for(const child of Object.values(workspace.canvases).filter(record=>record.parentId===id))deleteCanvasTree(child.id);delete workspace.canvases[id];}
+function nextNodePosition(document,width,height){
+  if(document===documentData){const box=canvas.getBoundingClientRect(),center=canvasPoint(box.left+box.width/2,box.top+box.height/2);return{x:Math.round(center.x-width/2),y:Math.round(center.y-height/2)};}const nodes=document.nodes||[];if(!nodes.length)return{x:0,y:0};return{x:Math.max(...nodes.map(node=>node.x+node.width))+60,y:Math.min(...nodes.map(node=>node.y))};
+}
+function revealWorkspaceNode(canvasId,nodeId){
+  const reveal=()=>{if(currentCanvasId!==canvasId)return;const node=documentData.nodes.find(item=>item.id===nodeId);if(!node)return;selected={kind:"node",id:nodeId};shell.classList.add("inspector-open");render();focusNode(node,1.05);};if(currentCanvasId===canvasId)reveal();else{switchCanvas(canvasId,{direction:"switch",focusNodeId:nodeId});setTimeout(reveal,320);}
+}
+function createJDEntry({parentCanvasId,code,title,itemFormat="canvas"}){
+  const checked=validateJDCode(code,parentCanvasId);code=checked.code;title=String(title).trim();if(!title)throw new Error("Add a short title.");const parent=workspace.canvases[parentCanvasId];if(!parent)throw new Error("The parent canvas no longer exists.");workspace.johnnyDecimal.enabled=true;
+  const nodeId=uid("node"),isCanvasEntry=checked.kind!=="item"||itemFormat==="canvas",size=isCanvasEntry?[360,250]:[300,160],position=nextNodePosition(parent.document,...size),displayTitle=jdDisplayTitle(code,title);let canvasId=null,node;
+  if(isCanvasEntry){canvasId=uid("canvas");const path=`canvases/${slug(`${canonicalJDCode(code)}-${title}`)}.canvas`;node={id:nodeId,type:"file",...position,width:size[0],height:size[1],color:"5",file:path};workspace.canvases[canvasId]={id:canvasId,title:displayTitle,parentId:parentCanvasId,portalNodeId:nodeId,path,document:{nodes:[],edges:[]},camera:null,jdCode:code,jdTitle:title,jdKind:checked.kind};}
+  else node={id:nodeId,type:"text",...position,width:size[0],height:size[1],color:"3",text:`<!-- orbit:jd ${code} -->\n# ${displayTitle}\nAdd the context, outcome, or reference for this item.`};
+  parent.document.nodes ||= [];parent.document.nodes.push(node);workspace.johnnyDecimal.entries[code]={code,title,kind:checked.kind,parentCanvasId,nodeId,canvasId,itemFormat:isCanvasEntry?"canvas":"note"};scheduleSave();$("#johnnyDecimalDialog")?.close();revealWorkspaceNode(parentCanvasId,nodeId);toast(`${formatJDCode(code)} added to the index`);return node;
+}
+function deleteJDEntriesForCanvas(id){for(const [code,entry] of Object.entries(jdEntries()))if(entry.canvasId===id||entry.parentCanvasId===id)delete workspace.johnnyDecimal.entries[code];}
+function deleteCanvasTree(id){for(const child of Object.values(workspace.canvases).filter(record=>record.parentId===id))deleteCanvasTree(child.id);deleteJDEntriesForCanvas(id);delete workspace.canvases[id];}
+function jdParentOptions(){return orderedCanvasRecords().filter(record=>record.id===workspace.rootId||["area","category"].includes(jdContainerKind(record.id)));}
+function updateJDDialog(){
+  const parentId=$("#jdParent").value,kind=jdChildKind(parentId),code=suggestJDCode(parentId),label={area:"Area",category:"Category",item:"Item"}[kind]||"Entry";$("#jdKindLabel").textContent=label;$("#jdCode").value=code;$("#jdCode").placeholder=kind==="area"?"10-19":kind==="category"?"11":"11.01";$("#jdTitle").placeholder=kind==="area"?"Personal":kind==="category"?"Finance":"Monthly budget";$("#jdItemFormatField").hidden=kind!=="item";$("#createJDEntry").disabled=!kind||!code;$("#jdCreateResult").textContent=kind?`Next available ${label.toLowerCase()} ID suggested automatically.`:"This canvas cannot contain another Johnny Decimal level.";
+}
+function openJohnnyDecimalDialog(){
+  const dialog=$("#johnnyDecimalDialog"),parent=$("#jdParent"),options=jdParentOptions();parent.innerHTML=options.map(record=>`<option value="${escapeHTML(record.id)}">${escapeHTML(record.id===workspace.rootId?`Index — ${record.title}`:record.title)}</option>`).join("");const preferred=options.some(record=>record.id===currentCanvasId)?currentCanvasId:options.some(record=>record.id===canvasRecord().parentId)?canvasRecord().parentId:workspace.rootId;parent.value=preferred;$("#jdTitle").value="";$("#jdLookup").value="";$("#jdLookupList").innerHTML=Object.values(jdEntries()).sort((a,b)=>jdSortValue(a.code)-jdSortValue(b.code)).map(entry=>`<option value="${escapeHTML(formatJDCode(entry.code))}">${escapeHTML(entry.title)}</option>`).join("");$("#jdLookupResult").textContent="";updateJDDialog();dialog.showModal();setTimeout(()=>$("#jdTitle").focus(),80);
+}
+function goToJD(value){
+  const code=canonicalJDCode(value),entry=jdEntries()[code],result=$("#jdLookupResult");if(!entry){result.className="settings-test error";result.textContent=`No entry found for ${formatJDCode(code)||"that ID"}.`;return;}result.className="settings-test success";result.textContent=`Opening ${formatJDCode(code)} — ${entry.title}`;setTimeout(()=>{$("#johnnyDecimalDialog").close();if(entry.canvasId)switchCanvas(entry.canvasId,{direction:"switch",fit:!workspace.canvases[entry.canvasId].camera});else revealWorkspaceNode(entry.parentCanvasId,entry.nodeId);},100);
+}
 
 const AI_CARD_MARKER="<!-- orbit:ai-card -->";
 function isAICard(node){return node?.type==="text"&&node.text.includes(AI_CARD_MARKER);}
@@ -225,7 +284,7 @@ function renderNodes() {
       if(isAICard(node)){
         const config=parseAICard(node),inputs=inputNodesForAICard(node.id),runtime=aiCardRuntime.get(node.id)||{status:"Ready"};element.classList.add("ai-card");element.classList.toggle("running",runtime.running===true);
         content.innerHTML=`<div class="node-kicker">AI OPERATOR</div><h3 class="ai-card-title">${escapeHTML(config.title)}</h3><p class="ai-card-prompt">${escapeHTML(config.prompt)}</p><div class="ai-inputs">${inputs.length?inputs.map(input=>`<span class="ai-input-chip">← ${escapeHTML(nodeTitle(input))}</span>`).join(""):"<span class=\"ai-input-chip\">No inputs connected</span>"}</div><div class="ai-run-row"><span class="ai-run-status">${escapeHTML(runtime.status||"Ready")}</span><button class="ai-run-button" data-ai-run ${runtime.running?"disabled":""}>${runtime.running?"Running…":"Run now"}</button></div>`;
-      } else content.innerHTML = `<div class="node-kicker">${textMeta(node)}</div>${markdownToHTML(node.text)}`;
+      } else {const jdCode=jdCodeFromNode(node);content.innerHTML = `<div class="node-kicker">${jdCode?`ITEM · ${escapeHTML(formatJDCode(jdCode))}`:textMeta(node)}</div>${markdownToHTML(node.text)}`;}
     } else if (node.type === "link") {
       let linkTitle = "Saved link";
       try { linkTitle = new URL(node.url).hostname.replace(/^www\./, ""); } catch (_) {}
@@ -234,7 +293,7 @@ function renderNodes() {
       const subcanvasId=subcanvasIdFromNode(node),subcanvas=subcanvasId&&workspace.canvases[subcanvasId];
       if(subcanvas){
         const children=Object.values(workspace.canvases).filter(record=>record.parentId===subcanvasId).length;element.classList.add("subcanvas-node");element.dataset.subcanvasId=subcanvasId;
-        content.innerHTML=`<div class="node-kicker">SUB-CANVAS · ZOOM PORTAL</div><h3>${escapeHTML(subcanvas.title)}</h3><p>${subcanvas.document.nodes.length} item${subcanvas.document.nodes.length===1?"":"s"}${children?` · ${children} nested`:""}</p><div class="portal-preview">${portalPreview(subcanvas.document)}</div><div class="portal-actions"><span>Double-click or zoom to 220%</span><button type="button" data-open-subcanvas>Open ↘</button></div>`;
+        content.innerHTML=`<div class="node-kicker">${subcanvas.jdCode?`${escapeHTML(subcanvas.jdKind.toUpperCase())} · ${escapeHTML(formatJDCode(subcanvas.jdCode))}`:"SUB-CANVAS · ZOOM PORTAL"}</div><h3>${escapeHTML(subcanvas.jdTitle||subcanvas.title)}</h3><p>${subcanvas.document.nodes.length} item${subcanvas.document.nodes.length===1?"":"s"}${children?` · ${children} nested`:""}</p><div class="portal-preview">${portalPreview(subcanvas.document)}</div><div class="portal-actions"><span>Double-click or zoom to 220%</span><button type="button" data-open-subcanvas>Open ↘</button></div>`;
       } else if (/\.html?$/i.test(node.file)) {
         element.classList.add("html-widget");
         content.innerHTML = `<div class="node-kicker">LIVE HTML · SANDBOXED</div><iframe class="widget-frame" src="${safeFileURL(node.file)}" sandbox="allow-scripts" loading="lazy" referrerpolicy="no-referrer" title="${escapeHTML(node.file.split("/").pop())}"></iframe><div class="widget-shield"></div>`;
@@ -433,7 +492,7 @@ function renderInspector() {
     if (item.type==="text"&&isAICard(item)){const config=parseAICard(item);contentField=`<label class="field"><span>Operator name</span><input data-key="aiTitle" value="${escapeHTML(config.title)}"></label><label class="field"><span>AI instructions</span><textarea data-key="aiPrompt">${escapeHTML(config.prompt)}</textarea></label><div class="field-hint">Incoming connections become context. The generated note updates automatically when that context changes.</div>`;}
     else if (item.type==="text") contentField=`<label class="field"><span>Markdown</span><textarea data-key="text">${escapeHTML(item.text)}</textarea></label>`;
     if (item.type==="link") contentField=`<label class="field"><span>URL</span><input data-key="url" value="${escapeHTML(item.url)}"></label>`;
-    if (item.type==="file") {const subcanvasId=subcanvasIdFromNode(item),subcanvas=subcanvasId&&workspace.canvases[subcanvasId];contentField=subcanvas?`<label class="field"><span>Canvas title</span><input data-canvas-title="${escapeHTML(subcanvasId)}" value="${escapeHTML(subcanvas.title)}"></label><div class="field-hint">This portal is a standard JSON Canvas file node. Double-click it or zoom in to enter the nested canvas.</div><button type="button" class="button open-subcanvas-inspector" data-open-canvas="${escapeHTML(subcanvasId)}">Open sub-canvas ↘</button>`:`<label class="field"><span>File path</span><input data-key="file" value="${escapeHTML(item.file)}"></label><label class="field"><span>Subpath</span><input data-key="subpath" value="${escapeHTML(item.subpath||"")}"></label>`;}
+    if (item.type==="file") {const subcanvasId=subcanvasIdFromNode(item),subcanvas=subcanvasId&&workspace.canvases[subcanvasId];contentField=subcanvas?`<label class="field"><span>${subcanvas.jdCode?`${escapeHTML(formatJDCode(subcanvas.jdCode))} title`:"Canvas title"}</span><input data-canvas-title="${escapeHTML(subcanvasId)}" value="${escapeHTML(subcanvas.jdTitle||subcanvas.title)}"></label><div class="field-hint">This portal is a standard JSON Canvas file node. Double-click it or zoom in to enter the nested canvas.</div><button type="button" class="button open-subcanvas-inspector" data-open-canvas="${escapeHTML(subcanvasId)}">Open sub-canvas ↘</button>`:`<label class="field"><span>File path</span><input data-key="file" value="${escapeHTML(item.file)}"></label><label class="field"><span>Subpath</span><input data-key="subpath" value="${escapeHTML(item.subpath||"")}"></label>`;}
     if (item.type==="group") contentField=`<label class="field"><span>Label</span><input data-key="label" value="${escapeHTML(item.label||"")}"></label><label class="field"><span>Background path</span><input data-key="background" value="${escapeHTML(item.background||"")}"></label>`;
     panel.innerHTML=`<div class="inspector-head"><h3>${item.type[0].toUpperCase()+item.type.slice(1)} node</h3><button class="close-inspector">×</button></div><form class="inspector-form">${contentField}<div class="field-row"><label class="field"><span>X</span><input type="number" data-key="x" value="${item.x}"></label><label class="field"><span>Y</span><input type="number" data-key="y" value="${item.y}"></label></div><div class="field-row"><label class="field"><span>Width</span><input type="number" data-key="width" value="${item.width}"></label><label class="field"><span>Height</span><input type="number" data-key="height" value="${item.height}"></label></div><label class="field"><span>Color preset</span><div class="color-list">${colorButtons}</div></label><button type="button" class="danger-btn">Delete node</button></form>`;
   } else {
@@ -444,10 +503,11 @@ function renderInspector() {
     const before=aiCardSignatures(),key=input.dataset.key;
     if(key==="aiTitle"||key==="aiPrompt"){const config=parseAICard(item);item.text=buildAICardText(key==="aiTitle"?input.value:config.title,key==="aiPrompt"?input.value:config.prompt);}
     else item[key]=input.type==="number"?Math.round(Number(input.value)):input.value;
+    if(key==="text"){const code=jdCodeFromNode(item),entry=jdEntries()[code],heading=item.text.match(/^#\s+(.+)$/m)?.[1];if(entry&&heading){const formatted=formatJDCode(code),title=(heading.startsWith(formatted)?heading.slice(formatted.length).replace(/^\s*(?:—|-)\s*/,""):heading).trim();if(title)entry.title=title;}}
     if (input.tagName==="SELECT" && !input.value) delete item[key];
     scheduleSave(); renderNodes(); renderEdges(); renderMinimap(); scheduleChangedAICards(before);
   }));
-  const canvasTitleField=$("[data-canvas-title]",panel);if(canvasTitleField)canvasTitleField.addEventListener("input",()=>{const record=workspace.canvases[canvasTitleField.dataset.canvasTitle];if(!record)return;record.title=canvasTitleField.value||"Untitled canvas";scheduleSave();renderNodes();renderWorkspaceNavigation();});
+  const canvasTitleField=$("[data-canvas-title]",panel);if(canvasTitleField)canvasTitleField.addEventListener("input",()=>{const record=workspace.canvases[canvasTitleField.dataset.canvasTitle];if(!record)return;const title=canvasTitleField.value||"Untitled";if(record.jdCode){record.jdTitle=title;record.title=jdDisplayTitle(record.jdCode,title);const entry=jdEntries()[record.jdCode];if(entry)entry.title=title;}else record.title=title;scheduleSave();renderNodes();renderWorkspaceNavigation();});
   const openCanvas=$("[data-open-canvas]",panel);if(openCanvas)openCanvas.onclick=()=>enterSubcanvas(openCanvas.dataset.openCanvas);
   $$(".color-choice",panel).forEach(button=>button.onclick=()=>{item.color=button.dataset.color;scheduleSave();render();});
   $(".danger-btn",panel).onclick=deleteSelection;
@@ -456,9 +516,9 @@ function sideOptions(value) { return ["","top","right","bottom","left"].map(s=>`
 function deleteSelection() {
   if (!selected) return;const before=aiCardSignatures();
   if (selected.kind==="node") {
-    const node=documentData.nodes.find(item=>item.id===selected.id),subcanvasId=subcanvasIdFromNode(node);
+    const node=documentData.nodes.find(item=>item.id===selected.id),subcanvasId=subcanvasIdFromNode(node),jdPair=Object.entries(jdEntries()).find(([,entry])=>entry.parentCanvasId===currentCanvasId&&entry.nodeId===selected.id);
     if(subcanvasId&&!confirm(`Delete “${workspace.canvases[subcanvasId].title}” and every canvas nested inside it?`))return;
-    if(subcanvasId)deleteCanvasTree(subcanvasId);
+    if(subcanvasId)deleteCanvasTree(subcanvasId);else if(jdPair)delete workspace.johnnyDecimal.entries[jdPair[0]];
     documentData.nodes=documentData.nodes.filter(n=>n.id!==selected.id);
     documentData.edges=(documentData.edges||[]).filter(e=>e.fromNode!==selected.id&&e.toNode!==selected.id);
   } else documentData.edges=documentData.edges.filter(e=>e.id!==selected.id);
@@ -493,12 +553,18 @@ function setZoom(next) {
 }
 function toast(message) { const el=$("#toast");el.textContent=message;el.classList.add("show");clearTimeout(el._timer);el._timer=setTimeout(()=>el.classList.remove("show"),1800); }
 
+function downloadJSON(data,filename){const blob=new Blob([JSON.stringify(data,null,2)],{type:"application/json"}),anchor=document.createElement("a");anchor.href=URL.createObjectURL(blob);anchor.download=filename;anchor.click();setTimeout(()=>URL.revokeObjectURL(anchor.href),0);}
 function exportCanvas() {
-  const blob=new Blob([JSON.stringify(documentData,null,2)],{type:"application/json"});
-  const anchor=document.createElement("a");anchor.href=URL.createObjectURL(blob);anchor.download=($("#canvasTitle").value||"life-canvas").toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-|-$/g,"")+".canvas";anchor.click();URL.revokeObjectURL(anchor.href);toast("Canvas exported");
+  downloadJSON(documentData,slug($("#canvasTitle").value||"life-canvas")+".canvas");toast("Current canvas exported");
+}
+function exportWorkspace(){
+  persistWorkspace();downloadJSON({format:"orbit-workspace",version:1,exportedAt:new Date().toISOString(),workspace},`${slug(workspace.canvases[workspace.rootId].title)}.orbit.json`);toast(`${Object.keys(workspace.canvases).length} canvases exported`);
+}
+function validWorkspaceBundle(data){
+  const candidate=data?.format==="orbit-workspace"?data.workspace:data;if(candidate?.version!==1||!candidate.canvases||typeof candidate.canvases!=="object")return null;const records=Object.values(candidate.canvases);if(!records.length||!records.every(record=>record&&typeof record.id==="string"&&typeof record.title==="string"&&isCanvas(record.document)))return null;candidate.rootId=candidate.canvases[candidate.rootId]?candidate.rootId:records[0].id;candidate.activeId=candidate.canvases[candidate.activeId]?candidate.activeId:candidate.rootId;return normalizeWorkspace(candidate);
 }
 async function importCanvas(file) {
-  try { const parsed=JSON.parse(await file.text());if(!isCanvas(parsed))throw new Error("Not a valid JSON Canvas 1.0 document");documentData={nodes:parsed.nodes||[],edges:parsed.edges||[]};selected=null;scheduleSave();render();fitView();toast("Canvas imported"); }
+  try {const parsed=JSON.parse(await file.text()),importedWorkspace=validWorkspaceBundle(parsed);if(importedWorkspace){if(!confirm(`Import this Orbit space with ${Object.keys(importedWorkspace.canvases).length} canvases? Your current local space will be replaced.`))return;workspace=importedWorkspace;currentCanvasId=workspace.activeId;documentData=workspace.canvases[currentCanvasId].document;camera=workspace.canvases[currentCanvasId].camera||{x:80,y:55,zoom:1};selected=null;$("#canvasTitle").value=canvasRecord().title;persistWorkspace();render();fitView();toast("Whole workspace imported");return;}if(!isCanvas(parsed))throw new Error("Not a valid JSON Canvas document or Orbit workspace");documentData={nodes:parsed.nodes||[],edges:parsed.edges||[]};selected=null;scheduleSave();render();fitView();toast("Canvas imported");}
   catch(error){alert(`Could not import this file.\n\n${error.message}`);}
 }
 
@@ -681,20 +747,21 @@ async function runAICard(cardId,{manual=false}={}) {
   finally{state.running=false;const pending=state.pending;state.pending=false;aiCardRuntime.set(cardId,state);renderNodes();if(pending)scheduleAICard(cardId,250);}
 }
 
-window.orbitCanvas={getDocument:()=>clone(documentData),getWorkspace:()=>clone(workspace),getCurrentCanvas:()=>({id:currentCanvasId,title:canvasRecord().title,trail:canvasTrail().map(record=>({id:record.id,title:record.title}))}),getSummary:canvasSummary,validateOperations:validateCanvasOperations,applyOperations:applyCanvasOperations,runAICard,createSubcanvas,switchCanvas};
+window.orbitCanvas={getDocument:()=>clone(documentData),getWorkspace:()=>clone(workspace),getCurrentCanvas:()=>({id:currentCanvasId,title:canvasRecord().title,trail:canvasTrail().map(record=>({id:record.id,title:record.title}))}),getSummary:canvasSummary,validateOperations:validateCanvasOperations,applyOperations:applyCanvasOperations,runAICard,createSubcanvas,createJDEntry,goToJD,switchCanvas,exportWorkspace};
 applyCanvasTheme(localStorage.getItem("orbit-canvas-theme")||"default");updateProviderUI();
 
 $$("[data-add]").forEach(button=>button.onclick=()=>button.dataset.add==="ai-note"?openAINoteDialog():addNode(button.dataset.add));
-$("#newGroup").onclick=()=>addNode("group");$("#newCanvas").onclick=()=>createSubcanvas();
+$("#newGroup").onclick=()=>addNode("group");$("#newCanvas").onclick=()=>createSubcanvas();$("#johnnyDecimalState").onclick=openJohnnyDecimalDialog;
 $$(".nav-item[data-filter]").forEach(button=>button.onclick=()=>{activeFilter=button.dataset.filter;$$(".nav-item[data-filter]").forEach(b=>b.classList.toggle("active",b===button));renderNodes();renderEdges();});
 $$(".tool").forEach(button=>button.onclick=()=>{const tool=button.dataset.tool;if(tool==="note")setTool("note");else setTool(tool);});
 $("#zoomIn").onclick=()=>setZoom(camera.zoom*1.2);$("#zoomOut").onclick=()=>setZoom(camera.zoom/1.2);$("#zoomLabel").onclick=()=>setZoom(1);$("#fitView").onclick=fitView;
-$("#exportButton").onclick=exportCanvas;$("#importButton").onclick=()=>$("#fileInput").click();$("#fileInput").onchange=e=>{if(e.target.files[0])importCanvas(e.target.files[0]);e.target.value="";};
+$("#exportButton").onclick=exportCanvas;$("#exportWorkspaceButton").onclick=exportWorkspace;$("#importButton").onclick=()=>$("#fileInput").click();$("#fileInput").onchange=e=>{if(e.target.files[0])importCanvas(e.target.files[0]);e.target.value="";};
 $("#sidebarToggle").onclick=()=>shell.classList.toggle("sidebar-closed");
 $("#assistantButton").onclick=()=>setAssistantOpen(!$("#aiPanel").classList.contains("open"));$("#closeAssistant").onclick=()=>setAssistantOpen(false);$("#openAISettings").onclick=openAISettings;
 $("#aiForm").onsubmit=event=>{event.preventDefault();const input=$("#aiPrompt"),prompt=input.value;input.value="";runAssistant(prompt);};
 $("#aiPrompt").onkeydown=event=>{if(event.key==="Enter"&&!event.shiftKey){event.preventDefault();$("#aiForm").requestSubmit();}};
 $$(".ai-suggestions button").forEach(button=>button.onclick=()=>runAssistant(button.textContent));
+$("#closeJohnnyDecimal").onclick=$("#cancelJohnnyDecimal").onclick=()=>$("#johnnyDecimalDialog").close();$("#jdParent").onchange=updateJDDialog;$("#goToJD").onclick=()=>goToJD($("#jdLookup").value);$("#jdLookup").onkeydown=event=>{if(event.key==="Enter"){event.preventDefault();goToJD(event.currentTarget.value);}};$("#exportJDWorkspace").onclick=exportWorkspace;$("#johnnyDecimalForm").onsubmit=event=>{event.preventDefault();const result=$("#jdCreateResult");try{if(!event.currentTarget.reportValidity())return;createJDEntry({parentCanvasId:$("#jdParent").value,code:$("#jdCode").value,title:$("#jdTitle").value,itemFormat:$("#jdItemFormat").value});}catch(error){result.className="settings-test error";result.textContent=error.message;}};
 $("#closeAINote").onclick=$("#cancelAINote").onclick=()=>$("#aiNoteDialog").close();
 $("#aiNoteForm").onsubmit=event=>{event.preventDefault();const prompt=$("#aiNotePrompt").value.trim();if(prompt)createAINote(prompt);};
 $("#closeAISettings").onclick=$("#cancelAISettings").onclick=()=>$("#aiSettingsDialog").close();
@@ -702,13 +769,14 @@ $("#toggleAIKey").onclick=()=>{const input=$("#aiAPIKey"),show=input.type==="pas
 $("#aiSettingsForm").onsubmit=event=>{event.preventDefault();if(!event.currentTarget.reportValidity())return;try{const settings=settingsFromForm();if(!settings.model||!settings.apiKey)throw new Error("Model and API key are required");persistAISettings(settings);$("#aiSettingsDialog").close();toast(`Connected to ${settings.model}`);}catch(error){setSettingsResult(error.message,"error");}};
 $("#testAIProvider").onclick=async()=>{const form=$("#aiSettingsForm");if(!form.reportValidity())return;const button=$("#testAIProvider");try{const settings=settingsFromForm();button.disabled=true;setSettingsResult("Testing direct browser connection…");setSettingsResult(await testAIProvider(settings),"success");}catch(error){setSettingsResult(error.message,"error");}finally{button.disabled=false;}};
 $("#clearAIProvider").onclick=()=>{persistAISettings({...aiSettings,apiKey:"",rememberKey:false});localStorage.removeItem(AI_SECRET_KEY);sessionStorage.removeItem(AI_SECRET_KEY);$("#aiSettingsDialog").close();toast("Using local canvas tools");};
-$("#canvasTitle").value=canvasRecord().title;$("#canvasTitle").oninput=e=>{canvasRecord().title=e.target.value||"Untitled canvas";scheduleSave();renderWorkspaceNavigation();};
+$("#canvasTitle").value=canvasRecord().title;$("#canvasTitle").oninput=()=>{saveCurrentCanvasState();scheduleSave();renderWorkspaceNavigation();};$("#canvasTitle").onblur=()=>{$("#canvasTitle").value=canvasRecord().title;};
 $("#resetDemo").onclick=()=>{if(confirm("Reset the whole space to the demo? Every nested canvas and local change will be replaced.")){workspace=freshWorkspace(clone(demoCanvas));currentCanvasId=workspace.rootId;documentData=workspace.canvases[currentCanvasId].document;camera={x:80,y:55,zoom:.78};selected=null;$("#canvasTitle").value=canvasRecord().title;scheduleSave();render();fitView();toast("Demo space restored");}};
 $("#minimap").onclick=fitView;
 
 window.addEventListener("keydown",event=>{
   if (["INPUT","TEXTAREA","SELECT"].includes(event.target.tagName)) return;
   if(event.code==="Space"){spaceDown=true;event.preventDefault();}
+  if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==="k"){event.preventDefault();openJohnnyDecimalDialog();setTimeout(()=>$("#jdLookup").focus(),80);return;}
   if(event.altKey&&event.key==="ArrowUp"&&canvasRecord().parentId){event.preventDefault();leaveSubcanvas();return;}
   if(event.key==="Enter"&&selected?.kind==="node"){const node=documentData.nodes.find(item=>item.id===selected.id),subcanvasId=subcanvasIdFromNode(node);if(subcanvasId){event.preventDefault();enterSubcanvas(subcanvasId);return;}}
   if((event.key==="Delete"||event.key==="Backspace")&&selected)deleteSelection();

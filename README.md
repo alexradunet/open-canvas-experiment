@@ -10,6 +10,7 @@ A small, standalone proof of concept for a life-management app whose primary int
 
 - Infinite canvas with pan, centered zoom, fit-to-view, and minimap
 - Nested sub-canvases with live previews, breadcrumbs, switching, and infinite zoom navigation
+- Johnny Decimal areas, categories, and items with automatic IDs, validation, numeric sorting, and direct lookup
 - Draggable and resizable text, link, file, group, and sub-canvas portal nodes
 - Goals, projects, habits, ideas, and notes represented with standard JSON Canvas fields
 - Obsidian-style side handles for dragging connections directly between cards, plus connect mode
@@ -21,7 +22,7 @@ A small, standalone proof of concept for a life-management app whose primary int
 - Reactive AI operator cards: connected nodes become inputs and generated notes refresh when inputs change
 - Library filters
 - Browser-local persistence
-- JSON Canvas `.canvas` import and export
+- JSON Canvas `.canvas` import/export and whole-space `.orbit.json` backup/restore
 - No runtime dependencies or build step
 - Locally vendored BASM / Pixel Loom Linen tokens and self-hosted fonts
 
@@ -48,7 +49,23 @@ Then open <http://localhost:4173>.
 | Connect | Drag any side handle to another card, or press `C` and select two nodes |
 | Select | `V` |
 | Delete | `Delete` / `Backspace` |
-| Export | `Ctrl/Cmd + S` |
+| Open Johnny Decimal index | Select **JD** beside Canvases or press `Ctrl/Cmd + K` |
+| Export current canvas | `Ctrl/Cmd + S` |
+| Export all canvases | Select **Export whole space** in the sidebar |
+
+## Johnny Decimal spaces
+
+Select **JD** beside the Canvases heading. Orbit determines the next valid level from the selected parent:
+
+```text
+Index
+└── 10–19 — Personal          area
+    └── 11 — Finance          category
+        ├── 11.01 — Budget    item note
+        └── 11.02 — Taxes     item canvas
+```
+
+Area, category, and canvas-item portals remain standard JSON Canvas file nodes. Item notes store their identifier in a harmless Markdown comment and heading. IDs are checked for the correct parent range, duplicates are rejected, and the canvas hierarchy is sorted numerically. The same dialog provides direct **Go to ID** navigation.
 
 ## Connect an AI provider
 
@@ -79,7 +96,9 @@ By default, the key lives in `sessionStorage` for the current tab. Enabling **Re
 
 ## Data model
 
-Each canvas remains a JSON Canvas 1.0 document with only the top-level `nodes` and `edges` arrays. A sub-canvas portal is a standard file node pointing to `canvases/<id>.canvas`; Orbit's browser-local workspace sidecar tracks the hierarchy, titles, and per-canvas camera positions without adding private fields to any canvas document. The **Export .canvas** action exports the currently open canvas.
+Each canvas remains a JSON Canvas 1.0 document with only the top-level `nodes` and `edges` arrays. A sub-canvas portal is a standard file node pointing to a child document under `canvases/`; Johnny Decimal portals use readable paths such as `canvases/11-finance.canvas`. Orbit's browser-local workspace sidecar tracks hierarchy, titles, Johnny Decimal identifiers, and camera positions without adding private fields to canvas objects.
+
+**Export .canvas** exports the currently open level. **Export whole space** produces an `.orbit.json` backup containing the sidecar and every standards-compliant canvas document; the normal Import action restores either format.
 
 Life-management meaning is encoded portably:
 
