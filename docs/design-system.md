@@ -4,13 +4,13 @@ Orbit uses the locally vendored [BASM / Pixel Loom design system](https://github
 
 ## What is consumed directly
 
-- `vendor/pixel-loom/tokens/indigo.css`
+- `vendor/pixel-loom/tokens/linen.css`
 - `vendor/pixel-loom/fonts.css`
 - self-hosted Newsreader, Work Sans, and JetBrains Mono font files
 
 The files are vendored rather than loaded from a CDN so the browser and eventual desktop application remain local-first and work offline.
 
-Orbit currently defaults to Pixel Loom's dark Indigo palette. The application maps its structural aliases to the design-system tokens:
+Orbit defaults to Pixel Loom's dark Linen palette: deep dyed-wool surfaces, warm peach/madder as the primary thread, ochre accents, and teal details. The application maps its structural aliases to the design-system tokens:
 
 ```css
 :root {

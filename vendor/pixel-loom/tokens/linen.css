@@ -1,0 +1,205 @@
+/* ─────────────────────────────────────────────────────────────
+   Pixel Loom · Linen (warm)
+
+   Light is the default. Dark mode applies when:
+   - the user has explicitly toggled to dark (root.theme-dark), OR
+   - the system prefers dark AND the user has not explicitly chosen light
+
+   The toggle script in theme-toggle.js manages the .theme-light /
+   .theme-dark class on <html> and persists the choice in localStorage.
+   ───────────────────────────────────────────────────────────── */
+
+/* ─── Light (default) ─────────────────────────────────────── */
+:root {
+  /* Surfaces */
+  --surface: #fff8f6;
+  --surface-dim: #e9d6d1;
+  --surface-bright: #fff8f6;
+  --surface-container-lowest: #ffffff;
+  --surface-container-low: #fff1ed;
+  --surface-container: #fdeae4;
+  --surface-container-high: #f7e4df;
+  --surface-container-highest: #f1dfd9;
+  --on-surface: #231916;
+  --on-surface-variant: #56423c;
+  --inverse-surface: #392e2b;
+  --inverse-on-surface: #ffede8;
+  --outline: #89726b;
+  --outline-variant: #dcc1b8;
+  --surface-tint: #9d4323;
+
+  /* Brand (Madder red) */
+  --primary: #983f20;
+  --on-primary: #ffffff;
+  --primary-container: #b85736;
+  --on-primary-container: #fffaf9;
+  --inverse-primary: #ffb59d;
+  --primary-fixed: #ffdbd0;
+  --primary-fixed-dim: #ffb59d;
+  --on-primary-fixed: #390b00;
+  --on-primary-fixed-variant: #7e2c0e;
+
+  /* Secondary (Ochre) */
+  --secondary: #775a03;
+  --on-secondary: #ffffff;
+  --secondary-container: #fed578;
+  --on-secondary-container: #785b04;
+  --secondary-fixed: #ffdf9b;
+  --secondary-fixed-dim: #e9c267;
+  --on-secondary-fixed: #251a00;
+  --on-secondary-fixed-variant: #5b4300;
+
+  /* Tertiary (Teal) */
+  --tertiary: #00656b;
+  --on-tertiary: #ffffff;
+  --tertiary-container: #008087;
+  --on-tertiary-container: #ecfeff;
+  --tertiary-fixed: #93f2f9;
+  --tertiary-fixed-dim: #76d5dc;
+  --on-tertiary-fixed: #002022;
+  --on-tertiary-fixed-variant: #004f54;
+
+  /* Semantic */
+  --error: #ba1a1a;
+  --on-error: #ffffff;
+  --error-container: #ffdad6;
+  --on-error-container: #93000a;
+
+  /* Background */
+  --background: #fff8f6;
+  --on-background: #231916;
+  --surface-variant: #f1dfd9;
+
+  /* Shared (mode-agnostic) */
+  --space-base: 4px;
+  --space-xs: 8px;
+  --space-sm: 16px;
+  --space-md: 24px;
+  --space-lg: 40px;
+  --space-xl: 64px;
+  --gutter: 24px;
+  --margin: 32px;
+  --font-headline: 'Newsreader', Georgia, 'Times New Roman', serif;
+  --font-body: 'Work Sans', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono', 'SF Mono', Consolas, monospace;
+  --radius-sm: 2px;
+  --radius: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
+  --radius-full: 9999px;
+}
+
+/* ─── Dark — explicit override ────────────────────────────── */
+:root.theme-dark {
+  --surface: #1a110f;
+  --surface-dim: #1a110f;
+  --surface-bright: #423733;
+  --surface-container-lowest: #150c0a;
+  --surface-container-low: #231916;
+  --surface-container: #271d1a;
+  --surface-container-high: #322824;
+  --surface-container-highest: #3e322f;
+  --on-surface: #f1dfd9;
+  --on-surface-variant: #dcc1b8;
+  --inverse-surface: #f1dfd9;
+  --inverse-on-surface: #392e2b;
+  --outline: #a48b84;
+  --outline-variant: #56423c;
+  --surface-tint: #ffb59d;
+
+  --primary: #ffb59d;
+  --on-primary: #5d1800;
+  --primary-container: #b85736;
+  --on-primary-container: #fffaf9;
+  --inverse-primary: #9d4323;
+  --primary-fixed: #ffdbd0;
+  --primary-fixed-dim: #ffb59d;
+  --on-primary-fixed: #390b00;
+  --on-primary-fixed-variant: #7e2c0e;
+
+  --secondary: #e9c267;
+  --on-secondary: #3f2e00;
+  --secondary-container: #755800;
+  --on-secondary-container: #f8d074;
+  --secondary-fixed: #ffdf9b;
+  --secondary-fixed-dim: #e9c267;
+  --on-secondary-fixed: #251a00;
+  --on-secondary-fixed-variant: #5b4300;
+
+  --tertiary: #76d5dc;
+  --on-tertiary: #00363a;
+  --tertiary-container: #008087;
+  --on-tertiary-container: #ecfeff;
+  --tertiary-fixed: #93f2f9;
+  --tertiary-fixed-dim: #76d5dc;
+  --on-tertiary-fixed: #002022;
+  --on-tertiary-fixed-variant: #004f54;
+
+  --error: #ffb4ab;
+  --on-error: #690005;
+  --error-container: #93000a;
+  --on-error-container: #ffdad6;
+
+  --background: #1a110f;
+  --on-background: #f1dfd9;
+  --surface-variant: #3e322f;
+}
+
+/* ─── Dark — system preference (unless user picked light) ──── */
+@media (prefers-color-scheme: dark) {
+  :root:not(.theme-light) {
+    --surface: #1a110f;
+    --surface-dim: #1a110f;
+    --surface-bright: #423733;
+    --surface-container-lowest: #150c0a;
+    --surface-container-low: #231916;
+    --surface-container: #271d1a;
+    --surface-container-high: #322824;
+    --surface-container-highest: #3e322f;
+    --on-surface: #f1dfd9;
+    --on-surface-variant: #dcc1b8;
+    --inverse-surface: #f1dfd9;
+    --inverse-on-surface: #392e2b;
+    --outline: #a48b84;
+    --outline-variant: #56423c;
+    --surface-tint: #ffb59d;
+
+    --primary: #ffb59d;
+    --on-primary: #5d1800;
+    --primary-container: #b85736;
+    --on-primary-container: #fffaf9;
+    --inverse-primary: #9d4323;
+    --primary-fixed: #ffdbd0;
+    --primary-fixed-dim: #ffb59d;
+    --on-primary-fixed: #390b00;
+    --on-primary-fixed-variant: #7e2c0e;
+
+    --secondary: #e9c267;
+    --on-secondary: #3f2e00;
+    --secondary-container: #755800;
+    --on-secondary-container: #f8d074;
+    --secondary-fixed: #ffdf9b;
+    --secondary-fixed-dim: #e9c267;
+    --on-secondary-fixed: #251a00;
+    --on-secondary-fixed-variant: #5b4300;
+
+    --tertiary: #76d5dc;
+    --on-tertiary: #00363a;
+    --tertiary-container: #008087;
+    --on-tertiary-container: #ecfeff;
+    --tertiary-fixed: #93f2f9;
+    --tertiary-fixed-dim: #76d5dc;
+    --on-tertiary-fixed: #002022;
+    --on-tertiary-fixed-variant: #004f54;
+
+    --error: #ffb4ab;
+    --on-error: #690005;
+    --error-container: #93000a;
+    --on-error-container: #ffdad6;
+
+    --background: #1a110f;
+    --on-background: #f1dfd9;
+    --surface-variant: #3e322f;
+  }
+}

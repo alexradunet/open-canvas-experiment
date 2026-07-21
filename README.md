@@ -22,7 +22,7 @@ A small, standalone proof of concept for a life-management app whose primary int
 - Browser-local persistence
 - JSON Canvas `.canvas` import and export
 - No runtime dependencies or build step
-- Locally vendored BASM / Pixel Loom Indigo tokens and self-hosted fonts
+- Locally vendored BASM / Pixel Loom Linen tokens and self-hosted fonts
 
 ## Run locally
 

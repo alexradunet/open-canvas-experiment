@@ -11,7 +11,7 @@
     --accent: var(--primary);
     /* JSON Canvas preset colors remain distinct semantic data colors. */
     --green: #7ee0a1;
-    --red: var(--tertiary);
+    --red: var(--primary);
     --orange: #efa66a;
     --yellow: var(--secondary);
     --cyan: #64cbd0;
