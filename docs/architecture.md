@@ -6,6 +6,8 @@ Use a **standards-first web application with no UI framework**, package the same
 
 The platform already provides the important primitives: ES modules, Custom Elements, DOM templates, CSS custom properties, Pointer Events, SVG, Canvas 2D, WebGL, IndexedDB, Service Workers, Web Workers, `dialog`, `popover`, and `EventTarget`. An infinite canvas benefits from direct control over these APIs rather than a virtual DOM. Tauri adds filesystem access, menus, notifications, and SQLite without replacing the browser renderer.
 
+The static app now starts from `main.js` as an ES module and registers a same-origin Service Worker. Its versioned application-shell cache includes local modules, styles, fonts, SQLite Wasm, icons, and the sample widget. Runtime requests use the network when available and fall back to this cache when offline; cross-origin AI provider requests are never intercepted. The web app manifest makes the same shell installable without introducing a build pipeline. Lifecycle and validation details are in [offline.md](offline.md).
+
 ## Core principle: separate document truth from indexed views
 
 JSON Canvas should be the portable document and spatial layer, but not the only application database.
@@ -100,7 +102,7 @@ type CanvasCommand =
 
 Commands provide one place for validation, autosave, undo/redo, activity history, and eventual sync. Model output must compile into the same commands rather than directly manipulating component state or the host DOM.
 
-Live HTML/Three.js cards and the adaptation of `partialupdate` are described in [generative-canvas.md](generative-canvas.md).
+Live HTML/WebGL cards and the adaptation of `partialupdate` are described in [generative-canvas.md](generative-canvas.md).
 
 ## Delivery phases
 

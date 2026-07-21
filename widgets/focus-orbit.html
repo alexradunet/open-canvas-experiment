@@ -5,39 +5,60 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
   *{box-sizing:border-box}html,body{width:100%;height:100%;margin:0;overflow:hidden;background:#0b1116;color:#dce8e8;font-family:system-ui,sans-serif}
-  #scene{position:absolute;inset:0}canvas{display:block;width:100%;height:100%}
+  #scene{position:absolute;inset:0;touch-action:none}canvas{display:block;width:100%;height:100%}
   .copy{position:absolute;left:18px;top:15px;pointer-events:none}.copy small{display:block;color:#5f7c7e;font:8px ui-monospace,monospace;letter-spacing:.14em}.copy b{display:block;margin-top:4px;font-size:13px;font-weight:600}.copy span{display:block;color:#7d9799;font-size:9px;margin-top:2px}
-  .legend{position:absolute;right:15px;bottom:13px;padding:5px 8px;border:1px solid #26383a;border-radius:10px;background:#0b1116aa;color:#648183;font:8px ui-monospace,monospace;pointer-events:none}
+  .legend{position:absolute;right:15px;bottom:13px;padding:5px 8px;border:1px solid #26383a;border-radius:10px;background:#0b1116cc;color:#648183;font:8px ui-monospace,monospace;pointer-events:none}
   .css-orbit{position:absolute;left:50%;top:53%;width:230px;height:120px;transform:translate(-50%,-50%);pointer-events:none}.css-orbit i{position:absolute;inset:50% auto auto 50%;border:1px solid #315457;border-radius:50%;transform:translate(-50%,-50%)}.css-orbit i:nth-child(1){width:75px;height:30px}.css-orbit i:nth-child(2){width:145px;height:60px}.css-orbit i:nth-child(3){width:220px;height:90px}.css-orbit b{position:absolute;left:50%;top:50%;width:12px;height:12px;border-radius:50%;background:#7ee0a1;box-shadow:0 0 22px #7ee0a1;transform:translate(-50%,-50%)}.css-orbit em{position:absolute;width:7px;height:7px;border-radius:50%;background:#64cbd0;left:25px;top:46px;box-shadow:0 0 10px #64cbd0}.css-orbit em:last-child{background:#a78bfa;left:164px;top:23px}
-  .fallback{position:absolute;inset:0;display:none;place-items:center;color:#789;font-size:11px}
+  .fallback{position:absolute;left:18px;bottom:15px;display:none;color:#789;font:8px ui-monospace,monospace;letter-spacing:.08em}
+  @media (prefers-reduced-motion:reduce){.copy span{display:none}}
 </style>
 </head>
 <body>
-  <div id="scene"></div>
-  <div class="css-orbit" id="cssOrbit"><i></i><i></i><i></i><b></b><em></em><em></em></div>
-  <div class="copy"><small>LIVE THREE.JS WIDGET</small><b>Focus orbit</b><span>Drag to change perspective</span></div>
+  <div id="scene" aria-label="Interactive focus orbit visualization"></div>
+  <div class="css-orbit" id="cssOrbit" aria-hidden="true"><i></i><i></i><i></i><b></b><em></em><em></em></div>
+  <div class="copy"><small>LIVE WEBGL WIDGET</small><b>Focus orbit</b><span>Drag to change perspective</span></div>
   <div class="legend">● now &nbsp; ○ next</div>
-  <div class="fallback" id="fallback">Three.js could not be loaded.</div>
+  <div class="fallback" id="fallback">CSS fallback · WebGL2 unavailable</div>
 <script type="module">
-try {
-  const THREE = await import('https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js');
-  const root=document.querySelector('#scene');
-  const scene=new THREE.Scene();
-  scene.fog=new THREE.FogExp2(0x0b1116,.055);
-  const camera=new THREE.PerspectiveCamera(45,1,.1,100);camera.position.set(0,4.2,8.5);camera.lookAt(0,0,0);
-  const renderer=new THREE.WebGLRenderer({antialias:true,alpha:true});renderer.setPixelRatio(Math.min(devicePixelRatio,2));root.append(renderer.domElement);
-  const group=new THREE.Group();group.rotation.x=-.32;scene.add(group);
-  const ringMaterial=new THREE.MeshBasicMaterial({color:0x315457,transparent:true,opacity:.7,side:THREE.DoubleSide});
-  [1.25,2.05,2.85].forEach((radius,i)=>{const ring=new THREE.Mesh(new THREE.RingGeometry(radius-.012,radius+.012,128),ringMaterial);ring.rotation.x=Math.PI/2;group.add(ring)});
-  const center=new THREE.Mesh(new THREE.IcosahedronGeometry(.32,2),new THREE.MeshBasicMaterial({color:0x7ee0a1}));group.add(center);
-  const dots=[];[[1.25,.2,0x7ee0a1],[2.05,2.3,0x64cbd0],[2.85,4.1,0xa78bfa]].forEach(([radius,angle,color],i)=>{const dot=new THREE.Mesh(new THREE.SphereGeometry(.11+i*.025,20,20),new THREE.MeshBasicMaterial({color}));dot.userData={radius,angle,speed:.0035-i*.0006};group.add(dot);dots.push(dot)});
-  const stars=new THREE.BufferGeometry(),positions=[];for(let i=0;i<160;i++)positions.push((Math.random()-.5)*16,(Math.random()-.5)*10,(Math.random()-.5)*10);stars.setAttribute('position',new THREE.Float32BufferAttribute(positions,3));scene.add(new THREE.Points(stars,new THREE.PointsMaterial({color:0x587376,size:.018,transparent:true,opacity:.65})));
-  let drag=false,lastX=0;renderer.domElement.addEventListener('pointerdown',e=>{drag=true;lastX=e.clientX;renderer.domElement.setPointerCapture(e.pointerId)});renderer.domElement.addEventListener('pointermove',e=>{if(drag){group.rotation.z+=(e.clientX-lastX)*.008;lastX=e.clientX}});renderer.domElement.addEventListener('pointerup',()=>drag=false);
-  function resize(){const w=root.clientWidth,h=root.clientHeight;renderer.setSize(w,h,false);camera.aspect=w/h;camera.updateProjectionMatrix()}new ResizeObserver(resize).observe(root);resize();
-  document.querySelector('#cssOrbit').style.display='none';
-  let frame;function animate(){frame=requestAnimationFrame(animate);dots.forEach(dot=>{dot.userData.angle+=dot.userData.speed;dot.position.set(Math.cos(dot.userData.angle)*dot.userData.radius,0,Math.sin(dot.userData.angle)*dot.userData.radius)});center.rotation.x+=.003;center.rotation.y+=.005;renderer.render(scene,camera)}animate();
-  new MutationObserver(()=>{if(!document.documentElement.isConnected){cancelAnimationFrame(frame);renderer.dispose()}}).observe(document,{childList:true,subtree:true});
-} catch(error) { document.querySelector('#fallback').style.display='grid'; console.error(error); }
+const root=document.querySelector("#scene"),cssOrbit=document.querySelector("#cssOrbit"),fallback=document.querySelector("#fallback"),canvas=document.createElement("canvas");
+const gl=canvas.getContext("webgl2",{alpha:true,antialias:true,depth:false,powerPreference:"low-power"});
+if(!gl){fallback.style.display="block";}else{
+  root.append(canvas);cssOrbit.hidden=true;
+  const vertexSource=`#version 300 es
+    in vec3 aPosition;in vec4 aColor;in float aSize;
+    uniform float uAspect;uniform float uSpin;uniform float uTilt;
+    out vec4 vColor;
+    void main(){
+      float cz=cos(uSpin),sz=sin(uSpin),cx=cos(uTilt),sx=sin(uTilt);
+      vec3 p=vec3(aPosition.x*cz-aPosition.z*sz,aPosition.y,aPosition.x*sz+aPosition.z*cz);
+      p=vec3(p.x,p.y*cx-p.z*sx,p.y*sx+p.z*cx);
+      float perspective=1.0/(1.0-p.z*0.055);
+      gl_Position=vec4(p.x*perspective/(4.25*uAspect),p.y*perspective/3.15,0.0,1.0);
+      gl_PointSize=aSize;vColor=aColor;
+    }`;
+  const fragmentSource=`#version 300 es
+    precision mediump float;in vec4 vColor;uniform bool uRoundPoints;out vec4 outColor;
+    void main(){if(uRoundPoints&&distance(gl_PointCoord,vec2(.5))>.5)discard;outColor=vColor;}`;
+  const compile=(type,source)=>{const shader=gl.createShader(type);gl.shaderSource(shader,source);gl.compileShader(shader);if(!gl.getShaderParameter(shader,gl.COMPILE_STATUS))throw new Error(gl.getShaderInfoLog(shader));return shader;};
+  const vertexShader=compile(gl.VERTEX_SHADER,vertexSource),fragmentShader=compile(gl.FRAGMENT_SHADER,fragmentSource),program=gl.createProgram();gl.attachShader(program,vertexShader);gl.attachShader(program,fragmentShader);gl.linkProgram(program);if(!gl.getProgramParameter(program,gl.LINK_STATUS))throw new Error(gl.getProgramInfoLog(program));gl.deleteShader(vertexShader);gl.deleteShader(fragmentShader);gl.useProgram(program);
+  const stride=8*Float32Array.BYTES_PER_ELEMENT,position=gl.getAttribLocation(program,"aPosition"),color=gl.getAttribLocation(program,"aColor"),size=gl.getAttribLocation(program,"aSize");
+  const configureBuffer=buffer=>{gl.bindBuffer(gl.ARRAY_BUFFER,buffer);gl.enableVertexAttribArray(position);gl.vertexAttribPointer(position,3,gl.FLOAT,false,stride,0);gl.enableVertexAttribArray(color);gl.vertexAttribPointer(color,4,gl.FLOAT,false,stride,3*4);gl.enableVertexAttribArray(size);gl.vertexAttribPointer(size,1,gl.FLOAT,false,stride,7*4);};
+  const rings=[],ringData=[];[1.25,2.05,2.85].forEach(radius=>{const first=ringData.length/8,segments=128;for(let index=0;index<segments;index++){const angle=index/segments*Math.PI*2;ringData.push(Math.cos(angle)*radius,0,Math.sin(angle)*radius,.19,.33,.34,.72,1);}rings.push({first,count:segments});});
+  const ringBuffer=gl.createBuffer();configureBuffer(ringBuffer);gl.bufferData(gl.ARRAY_BUFFER,new Float32Array(ringData),gl.STATIC_DRAW);
+  const starData=[];let seed=0x51f15e;const random=()=>((seed=Math.imul(seed,1664525)+1013904223>>>0)/4294967296);for(let index=0;index<170;index++)starData.push((random()-.5)*13,(random()-.5)*7,(random()-.5)*6,.35,.49,.5,.5,1.4);
+  const starBuffer=gl.createBuffer();configureBuffer(starBuffer);gl.bufferData(gl.ARRAY_BUFFER,new Float32Array(starData),gl.STATIC_DRAW);
+  const pointBuffer=gl.createBuffer(),aspectLocation=gl.getUniformLocation(program,"uAspect"),spinLocation=gl.getUniformLocation(program,"uSpin"),tiltLocation=gl.getUniformLocation(program,"uTilt"),roundLocation=gl.getUniformLocation(program,"uRoundPoints");
+  const reduced=matchMedia("(prefers-reduced-motion: reduce)"),orbits=[[1.25,.2,.9,.49,.88,.63,13],[2.05,2.3,.72,.39,.8,.82,10],[2.85,4.1,.55,.65,.55,.98,11]];
+  let spin=0,drag=false,lastX=0,frame=0,inView=true,width=1,height=1;
+  const resize=()=>{const scale=Math.min(devicePixelRatio||1,2),nextWidth=Math.max(1,Math.round(root.clientWidth*scale)),nextHeight=Math.max(1,Math.round(root.clientHeight*scale));if(canvas.width!==nextWidth||canvas.height!==nextHeight){canvas.width=nextWidth;canvas.height=nextHeight;}width=nextWidth;height=nextHeight;gl.viewport(0,0,width,height);render(performance.now());};
+  const render=time=>{const seconds=time*.001,points=[0,0,0,.49,.88,.63,1,18];orbits.forEach(([radius,start,speed,r,g,b,pointSize])=>{const angle=start+(reduced.matches?0:seconds*speed);points.push(Math.cos(angle)*radius,0,Math.sin(angle)*radius,r,g,b,1,pointSize);});gl.clearColor(.043,.067,.086,1);gl.clear(gl.COLOR_BUFFER_BIT);gl.uniform1f(aspectLocation,width/height);gl.uniform1f(spinLocation,spin);gl.uniform1f(tiltLocation,-.47);gl.enable(gl.BLEND);gl.blendFunc(gl.SRC_ALPHA,gl.ONE_MINUS_SRC_ALPHA);gl.uniform1i(roundLocation,1);configureBuffer(starBuffer);gl.drawArrays(gl.POINTS,0,starData.length/8);gl.uniform1i(roundLocation,0);configureBuffer(ringBuffer);rings.forEach(ring=>gl.drawArrays(gl.LINE_LOOP,ring.first,ring.count));configureBuffer(pointBuffer);gl.bufferData(gl.ARRAY_BUFFER,new Float32Array(points),gl.DYNAMIC_DRAW);gl.uniform1i(roundLocation,1);gl.drawArrays(gl.POINTS,0,points.length/8);};
+  const animate=time=>{frame=0;render(time);if(!reduced.matches&&!document.hidden&&inView)frame=requestAnimationFrame(animate);};
+  const updateAnimation=()=>{if(frame)cancelAnimationFrame(frame);frame=0;if(!reduced.matches&&!document.hidden&&inView)frame=requestAnimationFrame(animate);else render(performance.now());};
+  canvas.addEventListener("pointerdown",event=>{drag=true;lastX=event.clientX;canvas.setPointerCapture(event.pointerId)});canvas.addEventListener("pointermove",event=>{if(!drag)return;spin+=(event.clientX-lastX)*.009;lastX=event.clientX;if(reduced.matches)render(performance.now());});canvas.addEventListener("pointerup",()=>drag=false);canvas.addEventListener("pointercancel",()=>drag=false);
+  canvas.addEventListener("webglcontextlost",event=>{event.preventDefault();if(frame)cancelAnimationFrame(frame);cssOrbit.hidden=false;fallback.style.display="block"});canvas.addEventListener("webglcontextrestored",()=>location.reload());
+  const resizeObserver=new ResizeObserver(resize),intersectionObserver=new IntersectionObserver(entries=>{inView=entries[0]?.isIntersecting!==false;updateAnimation();});document.addEventListener("visibilitychange",updateAnimation);reduced.addEventListener("change",updateAnimation);resizeObserver.observe(root);intersectionObserver.observe(canvas);resize();updateAnimation();
+  addEventListener("pagehide",()=>{if(frame)cancelAnimationFrame(frame);document.removeEventListener("visibilitychange",updateAnimation);reduced.removeEventListener("change",updateAnimation);resizeObserver.disconnect();intersectionObserver.disconnect();gl.deleteBuffer(ringBuffer);gl.deleteBuffer(starBuffer);gl.deleteBuffer(pointBuffer);gl.deleteProgram(program);},{once:true});
+}
 </script>
 </body>
 </html>

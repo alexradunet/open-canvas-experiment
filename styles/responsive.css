@@ -1,4 +1,5 @@
 @layer responsive {
+  @container orbit-content (max-width: 760px) { .today-grid{grid-template-columns:1fr}.today-head{align-items:start}.today-task{grid-template-columns:25px minmax(0,1fr)}.task-dates{grid-column:2;justify-content:start} }
   @media (max-width: 850px) {
     :root { --sidebar: 0px; }
     .brand { display:none; }.topbar{grid-template-columns:0 1fr auto}.save-state,.button.ghost{display:none}.minimap{display:none}

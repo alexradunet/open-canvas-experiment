@@ -18,13 +18,14 @@ A small, standalone proof of concept for a life-management app whose primary int
 - Obsidian-style side handles for dragging connections directly between cards, plus connect mode
 - Markdown cards and task checkboxes
 - Inspector for content, geometry, colors, and edge routing
-- Sandboxed HTML/CSS/Three.js cards represented as standard file nodes
+- Sandboxed HTML/CSS/Canvas/WebGL cards represented as standard file nodes
 - Canvas-aware copilot with local tools or a client-side OpenAI-compatible provider
 - Prompt-first AI notes that generate Markdown directly onto the canvas
 - Reactive AI operator cards: connected nodes become inputs and generated notes refresh when inputs change
 - Library filters
 - Browser-local persistence with an actual SQLite Wasm life database
 - JSON Canvas `.canvas` import/export and whole-space `.orbit.json` backup/restore, including normalized SQLite data
+- Installable offline shell with a web app manifest and Service Worker
 - No package install, CDN, or build step; SQLite Wasm is vendored locally
 - Locally vendored BASM / Pixel Loom Linen tokens and self-hosted fonts
 
@@ -36,7 +37,7 @@ Serve the directory with any static file server:
 python3 -m http.server 4173
 ```
 
-Then open <http://localhost:4173>.
+Then open <http://localhost:4173>. Service Workers are available on localhost, so after the first successful load the application shell also works offline.
 
 ## Controls
 
@@ -94,7 +95,7 @@ Orbit combines JSON Canvas documents with a queryable SQLite database. Canvas fi
 
 The static prototype runs official SQLite Wasm `3.53.0` against SQLite's `:localStorage:` kvvfs backend. The sidebar reports the database status. This is intentionally a starter backend: it works on GitHub Pages but is synchronous and subject to localStorage quota. The planned production adapter uses OPFS in a Worker, while Tauri can use native SQLite with the same schema.
 
-Whole-space export serializes the database as normalized JSON alongside every canvas, and Import restores both layers. See [`docs/life-data.md`](docs/life-data.md) for the schema, runtime API, backup format, and OPFS migration path.
+Whole-space export serializes the database as normalized JSON alongside every canvas, and Import restores both layers. See [`docs/life-data.md`](docs/life-data.md) for the schema, runtime API, backup format, and OPFS migration path. See [`docs/offline.md`](docs/offline.md) for application-shell caching, update behavior, and offline validation.
 
 ## Connect an AI provider
 
@@ -142,14 +143,14 @@ App-specific state such as viewport, filters, and UI selection is not added to e
 
 This project is intentionally built with browser standards and no UI framework or runtime dependencies. A production app can continue in that direction with:
 
-- ES modules, Custom Elements, DOM templates, CSS custom properties, Pointer Events, SVG, Canvas, and WebGL
+- ES modules, Custom Elements, DOM templates, CSS custom properties, Pointer Events, SVG, Canvas, and direct WebGL
 - a command-based canvas engine for selection, geometry, JSON Canvas updates, undo, and sync
-- IndexedDB and the File System Access API in the browser
+- a versioned Service Worker application shell, IndexedDB/OPFS, and the File System Access API in the browser
 - **Tauri 2** for a small desktop app with filesystem and SQLite access
 - **Capacitor** as an optional mobile shell around the same web application
 - `.canvas` files as the portable format while indexed task/calendar projections remain app metadata
 
-See [`docs/architecture.md`](docs/architecture.md) for the standards-first application design, [`docs/life-data.md`](docs/life-data.md) for JSON Canvas + SQLite storage, [`docs/design-system.md`](docs/design-system.md) for the BASM / Pixel Loom integration, and [`docs/generative-canvas.md`](docs/generative-canvas.md) for the live-card, partial-update, AI-operation, and security model.
+See [`docs/architecture.md`](docs/architecture.md) for the standards-first application design, [`docs/life-data.md`](docs/life-data.md) for JSON Canvas + SQLite storage, [`docs/offline.md`](docs/offline.md) for offline-first behavior, [`docs/design-system.md`](docs/design-system.md) for the BASM / Pixel Loom integration, and [`docs/generative-canvas.md`](docs/generative-canvas.md) for the live-card, partial-update, AI-operation, and security model.
 
 ## License
 

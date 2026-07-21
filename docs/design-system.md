@@ -58,6 +58,21 @@ styles/
 
 Every application file uses a named cascade layer. Files are loaded with standard `<link>` elements, so there is no CSS preprocessor, package dependency, or build process. Native landmarks, forms, labels, buttons, `dialog`, `nav`, `main`, `aside`, and `article` provide the semantic structure; classes identify application components rather than acting as styling utilities.
 
+## Modern CSS policy
+
+Use current platform CSS as progressive enhancement rather than recreating it in JavaScript:
+
+- semantic custom properties and `color-mix()` for theme relationships;
+- `clamp()` and fluid sizing where a component genuinely scales;
+- named container queries for components affected by sidebar/inspector width;
+- logical properties for new direction-agnostic layout rules;
+- `:focus-visible`, native `accent-color`, and forced-colors support;
+- `prefers-reduced-motion` for transitions, animations, and rendered widgets;
+- low-specificity selectors with `:where()` when a reusable component needs easy overrides;
+- feature queries when a newer enhancement needs a meaningful fallback.
+
+Media queries remain appropriate for application-shell viewport changes; container queries are preferred for reusable components. Do not use experimental syntax without checking target-browser support and retaining a usable baseline.
+
 ## Updating the vendored system
 
 Copy fonts, `fonts.css`, and the selected token file from the BASM repository. Review token changes before updating because the application deliberately does not inherit `base.css` or `components.css` automatically.

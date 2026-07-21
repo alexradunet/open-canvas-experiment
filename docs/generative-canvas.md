@@ -1,10 +1,10 @@
 # Generative canvas and live cards
 
-This is the proposed bridge between JSON Canvas, live HTML/Three.js cards, and the ideas in Phil Holden's MIT-licensed [`partialupdate`](https://github.com/philholden/partialupdate) experiment.
+This is the proposed bridge between JSON Canvas, live HTML/WebGL cards, and the ideas in Phil Holden's MIT-licensed [`partialupdate`](https://github.com/philholden/partialupdate) experiment.
 
 ## Keep the host document standard
 
-JSON Canvas 1.0 has no `html`, `widget`, or `threejs` node type. Adding one would make the document an application-specific dialect. Instead, Orbit treats a standard file node whose `file` ends in `.html` as a live card:
+JSON Canvas 1.0 has no `html`, `widget`, or `webgl` node type. Adding one would make the document an application-specific dialect. Instead, Orbit treats a standard file node whose `file` ends in `.html` as a live card:
 
 ```json
 {
@@ -19,7 +19,7 @@ JSON Canvas 1.0 has no `html`, `widget`, or `threejs` node type. Adding one woul
 }
 ```
 
-Other JSON Canvas clients still see a valid file attachment. Orbit renders it in an iframe with `sandbox="allow-scripts"`. HTML, CSS, SVG, Canvas 2D, and Three.js can all run inside that boundary.
+Other JSON Canvas clients still see a valid file attachment. Orbit renders it in an iframe with `sandbox="allow-scripts"`. HTML, CSS, SVG, Canvas 2D, and direct WebGL can all run inside that boundary. Orbit does not load a third-party rendering engine; `widgets/focus-orbit.html` uses WebGL2 shaders and buffers directly, keeps a CSS fallback, caps device-pixel ratio, honors reduced motion and page visibility, and handles context loss.
 
 The sandbox deliberately omits `allow-same-origin`, top navigation, popups, forms, downloads, camera, and microphone permissions. A future desktop build should serve workspace attachments through an app protocol rather than grant widgets direct filesystem access.
 

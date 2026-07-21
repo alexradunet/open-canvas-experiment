@@ -4,7 +4,11 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="theme-color" content="#1a110f" />
+  <meta name="description" content="A local-first life-management workspace built on JSON Canvas." />
   <title>Orbit — life on a canvas</title>
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="icon" href="icons/orbit.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="icons/orbit-192.png" />
   <link rel="stylesheet" href="vendor/pixel-loom/fonts.css" />
   <link rel="stylesheet" href="vendor/pixel-loom/tokens/linen.css" />
   <link rel="stylesheet" href="styles/layers.css" />
@@ -49,7 +53,7 @@
           <button class="add-card wide" data-add="task"><span class="add-icon task-icon">✓</span><b>Task</b><small>Action with status, schedule, and due date</small></button>
           <button class="add-card wide" data-add="ai-note"><span class="add-icon ai-note-icon">✎</span><b>AI note</b><small>Ask a question, then create a note</small></button>
           <button class="add-card wide" data-add="ai"><span class="add-icon ai-icon">✦</span><b>AI operator</b><small>Connected inputs → generated note</small></button>
-          <button class="add-card wide" data-add="widget"><span class="add-icon widget-icon">◉</span><b>Live widget</b><small>Sandboxed HTML, CSS, or Three.js</small></button>
+          <button class="add-card wide" data-add="widget"><span class="add-icon widget-icon">◉</span><b>Live widget</b><small>Sandboxed HTML, CSS, or WebGL</small></button>
           <button class="add-card wide subcanvas-add" data-add="subcanvas"><span class="add-icon subcanvas-icon">↘</span><b>Sub-canvas</b><small>Enter by opening or zooming into it</small></button>
         </div>
       </section>
@@ -221,7 +225,6 @@
     </article>
   </template>
 
-  <script src="app.js"></script>
-  <script type="module" src="storage/life-store.js"></script>
+  <script type="module" src="main.js"></script>
 </body>
 </html>
