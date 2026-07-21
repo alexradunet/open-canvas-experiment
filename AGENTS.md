@@ -72,7 +72,6 @@ styles/                     Named cascade layers, tokens, shell, canvas, compone
 docs/                       Architecture and subsystem documentation
 widgets/                    Sandboxed HTML file-node widgets
 vendor/pixel-loom/          Self-hosted fonts and upstream design-system provenance
-vendor/sqlite/              Historical vendored provenance only; not loaded at runtime
 .github/workflows/pages.yml Deploys the repository root as a static GitHub Pages artifact
 ```
 

@@ -260,7 +260,15 @@ function configureLifeRuntime(vault) {
 async function seedStarterTasks() {
   for (const [categoryCode, title, notes] of JD_LIFE_STARTER_TASKS) {
     const canvasId = workspace.johnnyDecimal.entries[categoryCode]?.canvasId;
-    if (canvasId) await taskRepository.createTask({ title, body: notes, canvasId, status: "inbox", geometry: { x: 0, y: 240, width: 310, height: 180, color: "5", id: `starter-task-node-${categoryCode}` });
+    if (canvasId) {
+      await taskRepository.createTask({
+        title,
+        body: notes,
+        canvasId,
+        status: "inbox",
+        geometry: { x: 0, y: 240, width: 310, height: 180, color: "5", id: `starter-task-node-${categoryCode}` },
+      });
+    }
   }
 }
 // Vault-first asynchronous boot. The only post-migration source of truth is the

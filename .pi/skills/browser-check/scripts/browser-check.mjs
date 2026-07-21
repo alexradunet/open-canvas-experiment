@@ -6,7 +6,7 @@
 //   node browser-check.mjs eval  [url] <expression> [--wait expr] [--profile dir]
 //   node browser-check.mjs shot  [url] <file.png> [--selector css] [--profile dir]
 import { spawn, execSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -279,7 +279,9 @@ async function smoke(url, flags) {
       record("select: card selected + inspector open", sel.selected && sel.inspector);
       record("select: corner-bracket frame, no circles", sel.bearingVisible && sel.hasBrackets && sel.borderChangesOnSelect && sel.handlesHiddenOnSelect, `frame:${sel.bearingVisible} brackets:${sel.hasBrackets} border:${sel.borderChangesOnSelect} handlesHidden:${sel.handlesHiddenOnSelect}`);
       if (flags.screenshot) {
-        const file = join(resolve(flags.screenshot), "selected-card.png");
+        const directory = resolve(flags.screenshot);
+        mkdirSync(directory, { recursive: true });
+        const file = join(directory, "selected-card.png");
         await session.screenshot(file, ".canvas-node.selected");
         record("select: screenshot captured", true, file);
       }
