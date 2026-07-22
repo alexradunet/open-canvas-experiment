@@ -65,7 +65,7 @@ All duration, easing, distance, and scale values come from `styles/tokens.css`; 
 
 ## Responsive contract
 
-Desktop keeps the library and inspector in normal grid flow. At narrow widths they become off-canvas sheets so the canvas retains the viewport majority. Today uses a named content-container query, because its available width changes when either sheet opens. Touch controls expose at least a 44 × 44 CSS-pixel target or an equivalent expanded hit area.
+Desktop keeps the library in normal grid flow. The inspector is a fixed left-docked overlay that floats over a full-bleed canvas, flush to the library's trailing edge: selecting a card opens the node-details panel on the left *without* resizing the canvas track, so the spatial world never shifts when a selection changes. The deliberate trade-off is that the panel covers the leading cards while it is open, and the bottom tool rail recentres into the uncovered canvas so it never tucks beneath the panel. At narrow widths both the library and the inspector become off-canvas sheets — the library on the left, the inspector on the right — so the canvas retains the viewport majority. Today uses a named content-container query, because its available width changes when either sheet opens. Touch controls expose at least a 44 × 44 CSS-pixel target or an equivalent expanded hit area.
 
 ## Modern CSS policy
 

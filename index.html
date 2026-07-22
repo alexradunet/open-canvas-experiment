@@ -52,17 +52,17 @@
       <nav aria-label="Canvas library">
         <div class="section-heading"><p class="section-label">LIBRARY</p><button class="tiny-btn" id="newGroup" title="Add group">＋</button></div>
         <button class="nav-item active" data-filter="all"><span>◫</span>Everything <em id="allCount">0</em></button>
-        <button class="nav-item" data-filter="1"><span class="dot red"></span>Goals <em id="goalCount">0</em></button>
-        <button class="nav-item" data-filter="4"><span class="dot green"></span>Habits <em id="habitCount">0</em></button>
-        <button class="nav-item" data-filter="6"><span class="dot purple"></span>Projects <em id="projectCount">0</em></button>
-        <button class="nav-item" data-filter="2"><span class="dot orange"></span>Ideas <em id="ideaCount">0</em></button>
+        <button class="nav-item" data-filter="1"><span><i class="dot red"></i></span>Goals <em id="goalCount">0</em></button>
+        <button class="nav-item" data-filter="4"><span><i class="dot green"></i></span>Habits <em id="habitCount">0</em></button>
+        <button class="nav-item" data-filter="6"><span><i class="dot purple"></i></span>Projects <em id="projectCount">0</em></button>
+        <button class="nav-item" data-filter="2"><span><i class="dot orange"></i></span>Ideas <em id="ideaCount">0</em></button>
       </nav>
 
       <section class="sidebar-bottom" aria-label="Help and information">
         <div class="tip"><span>↘</span><div><b>Infinite zoom</b><p>Double-click a sub-canvas, or zoom into it past 220%. Zoom all the way out to return.</p></div></div>
         <button class="nav-item" id="exportWorkspaceButton"><span>⇩</span>Export whole space</button>
         <button class="nav-item" id="resetDemo"><span>↺</span>Reset starter</button>
-        <div class="storage-state" id="lifeIndexStatus" title="Preparing the canonical files"><i></i> Preparing files…</div>
+        <div class="storage-state is-indexing" title="Preparing the canonical files"><i></i><span id="lifeIndexStatus">Preparing files…</span></div>
         <a href="https://jsoncanvas.org/spec/1.0/" target="_blank" rel="noreferrer" class="spec-link">JSON Canvas 1.0 <span>↗</span></a>
       </section>
     </aside>
@@ -120,7 +120,7 @@
 
     <aside class="inspector" id="inspector">
       <div class="inspector-empty">
-        <span>↖</span><h3>Nothing selected</h3><p>Select a card or connection to edit its details.</p>
+        <span>↗</span><h3>Nothing selected</h3><p>Select a card or connection to edit its details.</p>
       </div>
     </aside>
 

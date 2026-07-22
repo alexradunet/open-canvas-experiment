@@ -1,12 +1,21 @@
 @layer components {
   .inspector {
-    grid-row: 2;
-    grid-column: 3;
+    position: fixed;
+    inset: 64px auto 0 var(--sidebar);
+    width: 292px;
     overflow: hidden auto;
-    border-inline-start: 2px solid var(--balaur-color-outline);
+    border-inline-end: 2px solid var(--balaur-color-outline);
     background: var(--balaur-texture-oak);
+    box-shadow: 8px 0 24px rgb(0 0 0 / 38%);
     color: var(--balaur-content-on-dark);
     scroll-padding-block: var(--balaur-space-4);
+    visibility: hidden;
+    transform: translateX(-100%);
+    z-index: 15;
+  }
+  .app-shell.inspector-open .inspector {
+    visibility: visible;
+    transform: translateX(0);
   }
   .inspector-empty {
     width: 292px;

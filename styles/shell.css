@@ -1,12 +1,11 @@
 @layer shell {
   .app-shell {
     display: grid;
-    grid-template: 64px minmax(0, 1fr) / var(--sidebar) minmax(0, 1fr) var(--inspector);
+    grid-template: 64px minmax(0, 1fr) / var(--sidebar) minmax(0, 1fr);
     width: 100vw;
     height: 100dvh;
     background: var(--balaur-surface-page);
   }
-  .app-shell.inspector-open { --inspector: 292px; }
   .app-shell.sidebar-closed { --sidebar: 0px; }
 
   .topbar {
@@ -205,19 +204,43 @@
     gap: var(--balaur-space-5);
     overflow: hidden auto;
     border-inline-end: 2px solid var(--balaur-color-outline);
-    padding: var(--balaur-space-4) var(--balaur-space-3);
+    padding: var(--balaur-space-4) 10px;
     background: var(--balaur-texture-oak);
     color: var(--balaur-content-on-dark);
     scroll-padding-block: var(--balaur-space-4);
+    scrollbar-width: thin;
+    scrollbar-color: var(--balaur-color-leather-800) transparent;
     z-index: 10;
   }
+  .sidebar::-webkit-scrollbar { width: 8px; }
+  .sidebar::-webkit-scrollbar-track { background: transparent; }
+  .sidebar::-webkit-scrollbar-thumb {
+    border: 2px solid var(--balaur-color-oak-900);
+    border-radius: 4px;
+    background: var(--balaur-color-leather-800);
+  }
+  .section-heading {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding-inline: 5px;
+  }
   .section-label {
-    margin: 0 0 10px 5px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex: 1;
+    margin: 0;
     color: var(--balaur-content-on-dark-muted);
     font: 500 9px var(--balaur-font-mono);
-    letter-spacing: .12em;
+    letter-spacing: .16em;
   }
-  .section-heading { display: flex; align-items: start; justify-content: space-between; }
+  .section-label::after {
+    content: "";
+    height: 1px;
+    flex: 1;
+    background: linear-gradient(90deg, var(--balaur-border-default), transparent);
+  }
   .section-actions { display: flex; align-items: center; gap: 4px; }
   .tiny-btn {
     min-width: var(--balaur-target-min);
@@ -227,6 +250,8 @@
     color: var(--balaur-content-on-dark-muted);
     cursor: pointer;
   }
+  .tiny-btn:hover { color: var(--balaur-action-primary); }
+  #newCanvas:hover, #newGroup:hover { transform: rotate(90deg); }
   .jd-button {
     border: 1px solid var(--balaur-border-default);
     border-radius: var(--balaur-radius-control);
@@ -238,12 +263,13 @@
     color: var(--balaur-action-assistant);
   }
   .nav-item {
+    position: relative;
     display: flex;
     align-items: center;
     gap: 10px;
     width: 100%;
     min-height: var(--balaur-target-min);
-    border: 0;
+    border: 1px solid transparent;
     border-radius: var(--balaur-radius-control);
     padding: 8px 9px;
     background: transparent;
@@ -252,17 +278,66 @@
     text-align: start;
     cursor: pointer;
   }
-  .nav-item:hover, .nav-item.active {
+  /* Carved recess that carries each row's glyph or library dot. */
+  .nav-item > span:first-child {
+    display: grid;
+    place-items: center;
+    width: 24px;
+    height: 24px;
+    flex: 0 0 auto;
+    border-radius: var(--balaur-radius-control);
+    background: var(--balaur-color-soot-950);
+    box-shadow: inset 0 1px 3px rgb(0 0 0 / 55%), inset 0 -1px 0 rgb(255 255 255 / 7%);
+    color: var(--balaur-content-on-dark-muted);
+    font: 500 11px var(--balaur-font-mono);
+  }
+  .nav-item:hover {
+    border-color: var(--balaur-border-subtle);
     background: var(--balaur-surface-oak-raised);
+    box-shadow: inset 0 1px 0 rgb(255 255 255 / 6%);
+    color: var(--balaur-content-on-dark);
+    transform: translateX(2px);
+  }
+  .nav-item:hover > span:first-child {
+    color: var(--balaur-content-on-dark);
+    box-shadow: inset 0 1px 2px rgb(0 0 0 / 45%), inset 0 -1px 0 rgb(255 255 255 / 12%);
+  }
+  .nav-item.active {
+    border-color: var(--balaur-border-default);
+    background:
+      linear-gradient(90deg, rgb(242 193 78 / 10%), transparent 55%),
+      var(--balaur-surface-oak-raised);
+    box-shadow: inset 0 1px 0 rgb(255 255 255 / 8%);
     color: var(--balaur-content-on-dark);
   }
+  /* Brass rail marking the active canvas or filter. */
+  .nav-item.active::before {
+    content: "";
+    position: absolute;
+    inset-block: 7px;
+    inset-inline-start: -1px;
+    width: 2px;
+    border-radius: 1px;
+    background: var(--balaur-action-primary);
+    box-shadow: 0 0 8px rgb(242 193 78 / 55%);
+  }
+  .nav-item.active > span:first-child {
+    color: var(--balaur-action-primary);
+    box-shadow: inset 0 1px 3px rgb(0 0 0 / 55%), inset 0 0 0 1px rgb(242 193 78 / 28%);
+  }
+  .nav-item.active b { font-weight: 600; }
   .nav-item em {
     margin-inline-start: auto;
+    padding: 2px 7px;
+    border-radius: var(--balaur-radius-control);
+    background: var(--balaur-color-soot-950);
+    box-shadow: inset 0 1px 2px rgb(0 0 0 / 50%);
     color: var(--balaur-content-on-dark-muted);
     font: 10px var(--balaur-font-mono);
     font-style: normal;
   }
-  .canvas-list-item { padding-inline-start: calc(9px + var(--canvas-depth, 0) * 12px); }
+  .nav-item.active em { color: var(--balaur-action-primary); }
+  .canvas-list-item { padding-inline-start: calc(9px + var(--canvas-depth, 0) * 14px); }
   .canvas-list-item b {
     min-width: 0;
     overflow: hidden;
@@ -271,52 +346,69 @@
     white-space: nowrap;
   }
   .canvas-list-item.active b { color: var(--balaur-action-primary); }
-  .dot { width: 6px; height: 6px; border-radius: 50%; }
-  .red { background: var(--balaur-canvas-red); }
-  .green { background: var(--balaur-canvas-green); }
-  .orange { background: var(--balaur-canvas-orange); }
-  .purple { background: var(--balaur-canvas-purple); }
-  .sidebar-bottom { margin-block-start: auto; }
+  .dot { width: 7px; height: 7px; border-radius: 50%; }
+  .red { background: var(--balaur-canvas-red); color: var(--balaur-canvas-red); }
+  .green { background: var(--balaur-canvas-green); color: var(--balaur-canvas-green); }
+  .orange { background: var(--balaur-canvas-orange); color: var(--balaur-canvas-orange); }
+  .purple { background: var(--balaur-canvas-purple); color: var(--balaur-canvas-purple); }
+  .nav-item:hover .dot, .nav-item.active .dot { box-shadow: 0 0 7px 1px currentColor; }
+  .sidebar-bottom {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    margin-block-start: auto;
+  }
   .tip {
     display: flex;
     gap: 10px;
-    margin-block-end: 10px;
-    border-block-start: 1px solid var(--balaur-border-default);
-    padding: 12px 4px;
+    margin-block-end: 8px;
+    border: 1px solid var(--balaur-border-subtle);
+    border-radius: var(--balaur-radius-panel);
+    background: linear-gradient(180deg, var(--balaur-surface-oak-raised), var(--balaur-color-oak-900));
+    box-shadow: inset 0 1px 0 rgb(255 255 255 / 7%);
+    padding: 10px 12px;
     color: var(--balaur-content-on-dark-muted);
     font-size: 9px;
   }
-  .tip > span { color: var(--balaur-action-assistant); }
+  .tip > span { color: var(--balaur-action-assistant); font-size: 12px; }
   .tip b { color: var(--balaur-content-on-dark); font-size: 10px; }
   .tip p { margin: 2px 0 0; }
   .storage-state {
-    overflow: hidden;
+    display: flex;
+    align-items: center;
+    gap: 7px;
     padding: 8px 4px 2px;
     color: var(--balaur-content-on-dark-muted);
     font: 8px var(--balaur-font-mono);
+  }
+  .storage-state i {
+    width: 5px;
+    height: 5px;
+    flex: 0 0 auto;
+    border-radius: 50%;
+    background: var(--balaur-action-primary);
+    box-shadow: 0 0 6px rgb(242 193 78 / 60%);
+  }
+  .storage-state span {
+    overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .storage-state i {
-    display: inline-block;
-    width: 5px;
-    height: 5px;
-    margin-inline-end: 6px;
-    border-radius: 50%;
-    background: var(--balaur-border-default);
-  }
   .spec-link {
     display: flex;
+    align-items: center;
     justify-content: space-between;
     padding: 10px 4px;
     color: var(--balaur-content-on-dark-muted);
     font: 9px var(--balaur-font-mono);
     text-decoration: none;
   }
+  .spec-link:hover { color: var(--balaur-action-primary); }
+  .spec-link span { display: inline-block; }
 
   .familiar-control {
     position: fixed;
-    right: calc(var(--inspector) + 18px);
+    right: 18px;
     bottom: 112px;
     display: inline-flex;
     align-items: center;

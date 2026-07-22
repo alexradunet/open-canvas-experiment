@@ -33,6 +33,8 @@
       color: CanvasText;
     }
     :where(.canvas-node.selected, .connection-handle, .task-check) { border-color: Highlight; }
+    .nav-item.active::before { background: Highlight; box-shadow: none; }
+    :where(.storage-state i, .save-state i) { background: CanvasText; box-shadow: none; }
     .edge.selected .edge-line { stroke: Highlight; }
     .selection-bearing { border: 2px solid Highlight; }
     .selection-bearing i { display: none; }

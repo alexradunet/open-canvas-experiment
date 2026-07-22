@@ -7,7 +7,7 @@
   }
 
   @media (max-width: 850px) {
-    .app-shell { --sidebar: 0px; --inspector: 0px; }
+    .app-shell { --sidebar: 0px; }
     .brand { visibility: hidden; overflow: hidden; padding: 0; border: 0; }
     .topbar { grid-template-columns: 0 minmax(0, 1fr) auto; }
     .save-state { display: none; }
@@ -36,12 +36,21 @@
       width: min(292px, 88vw);
       visibility: hidden;
       transform: translateX(100%);
+      box-shadow: -8px 0 24px rgb(0 0 0 / 38%);
       z-index: 31;
     }
     .app-shell.inspector-open .inspector {
       visibility: visible;
       transform: translateX(0);
     }
+    /* Narrow layout docks the inspector as a right sheet, so the desktop
+       left-recenter of the tool rail and the zoom-control shift no longer apply. */
+    .app-shell.inspector-open .canvas-tools { transform: translateX(-50%); }
+    .app-shell.inspector-open .zoom-tools { left: 17px; }
+    /* The empty-state arrow points at the canvas: on mobile the inspector is a
+       right sheet, so the canvas sits to its left — flip the glyph accordingly. */
+    .inspector-empty > span { font-size: 0; }
+    .inspector-empty > span::before { content: "↖"; font-size: 25px; }
     .inspector-form, .inspector-head, .inspector-empty { width: 100%; }
   }
 

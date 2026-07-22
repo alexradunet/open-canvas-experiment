@@ -1,5 +1,5 @@
 @layer motion {
-  :where(.button, .add-menu-item, .nav-item, .tool, .zoom-tools button, .tiny-btn) {
+  :where(.button, .add-menu-item, .nav-item, .tool, .zoom-tools button, .tiny-btn, .spec-link) {
     transition:
       color var(--balaur-duration-focus) var(--balaur-ease-standard),
       background-color var(--balaur-duration-focus) var(--balaur-ease-standard),
@@ -107,7 +107,18 @@
     }
   }
 
+  .spec-link span {
+    transition: transform var(--balaur-duration-focus) var(--balaur-ease-standard);
+  }
+  .spec-link:hover span { transform: translate(2px, -2px); }
+  /* The dot only breathes while the index is actually building; once a settled
+     status is reported the .is-indexing class is dropped and the dot rests. */
+  .storage-state.is-indexing i {
+    animation: status-breathe var(--balaur-duration-process) var(--balaur-ease-standard) infinite;
+  }
+
   @keyframes connection-flow { to { stroke-dashoffset: -10; } }
+  @keyframes status-breathe { 50% { opacity: .35; } }
   @keyframes ai-run { to { background-position: -200% 0; } }
   @keyframes thinking { to { background-position: 6px 0; } }
   @keyframes balaur-bearing-enter {
@@ -150,8 +161,10 @@
       animation-duration: 0s !important;
     }
 
-    :where(.connection-preview path, .ai-card.running .node-accent, .ai-message.loading p::after) {
+    :where(.connection-preview path, .ai-card.running .node-accent, .ai-message.loading p::after, .storage-state.is-indexing i) {
       animation: none;
     }
+    /* Decorative hover motion collapses to a still state, not an instant jump. */
+    .nav-item:hover, #newCanvas:hover, #newGroup:hover, .spec-link:hover span { transform: none; }
   }
 }

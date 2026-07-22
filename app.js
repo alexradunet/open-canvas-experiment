@@ -227,7 +227,12 @@ async function reloadCanvasDocuments(canvasIds){
 
 function setIndexStatus(message, detail = message) {
   const state = $("#lifeIndexStatus");
-  if (state) { state.textContent = message; state.title = detail; }
+  if (state) {
+    state.textContent = message;
+    state.title = detail;
+    const wrap = state.closest(".storage-state");
+    if (wrap) { wrap.classList.remove("is-indexing"); wrap.title = detail; }
+  }
 }
 function setCanonicalWritable(writable, message = "") {
   canonicalWritable = writable;
@@ -838,7 +843,7 @@ function addNode(kind, point) {
 
 function renderInspector() {
   const panel=$("#inspector");
-  if (!selected) { panel.innerHTML='<div class="inspector-empty"><span>↖</span><h3>Nothing selected</h3><p>Select a card or connection to edit its details.</p></div>'; return; }
+  if (!selected) { panel.innerHTML='<div class="inspector-empty"><span>↗</span><h3>Nothing selected</h3><p>Select a card or connection to edit its details.</p></div>'; return; }
   const item = selected.kind==="node" ? documentData.nodes.find(n=>n.id===selected.id) : documentData.edges.find(e=>e.id===selected.id);
   if (!item) { selected=null; shell.classList.remove("inspector-open"); renderInspector(); return; }
   const colorButtons=Object.entries(COLORS).map(([key,value])=>`<button type="button" class="color-choice ${item.color===key?"active":""}" data-color="${key}" style="background:${value}" aria-label="Color ${key}"></button>`).join("");
@@ -1203,6 +1208,7 @@ $("#minimap").onclick=fitView;
 
 window.addEventListener("keydown",event=>{
   if (["INPUT","TEXTAREA","SELECT"].includes(event.target.tagName)) return;
+  if(event.key==="Escape"){if(!document.querySelector("dialog[open]")&&!document.body.classList.contains("connection-dragging")&&addMenuPanel.hidden&&selected){event.preventDefault();selected=null;connectSource=null;connectSourceSide=null;shell.classList.remove("inspector-open");render();}return;}
   if(event.code==="Space"){spaceDown=true;event.preventDefault();}
   if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==="k"){event.preventDefault();openJohnnyDecimalDialog();setTimeout(()=>$("#jdLookup").focus(),80);return;}
   if(event.altKey&&event.key==="ArrowUp"&&canvasRecord().parentId){event.preventDefault();leaveSubcanvas();return;}
