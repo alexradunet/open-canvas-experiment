@@ -1,65 +1,67 @@
-# Agent development workflow
+# Pi development workflow
 
-This document configures the interactive OpenCode workflow for Balaur. It does not create a background issue poller or unattended scheduler; QwenCloud Token Plan Individual is intended for personal interactive development.
+Balaur uses Pi interactively; there is no background issue poller or unattended scheduler. `.pi/subagents.json` disables scheduled subagents.
 
 ## Product definition
 
-For unclear or substantial product work, use this sequence:
+For unclear or substantial product work:
 
-1. `grill-with-docs` to resolve requirements, vocabulary, and architectural decisions.
-2. `prototype` only when a risky interaction or technical seam needs evidence.
-3. `to-spec` to publish the agreed behavior and testing decisions.
-4. `to-tickets` to create dependency-aware tracer-bullet issues.
-5. `implement` or the issue-to-PR flow below after an issue is `ready-for-agent`.
+1. Use the `grilling` skill to resolve requirements, vocabulary, and architectural decisions.
+2. Use `prototype` only when a risky interaction or technical seam needs evidence.
+3. Publish the agreed behavior and testing decisions in the issue or spec.
+4. Split large work into dependency-aware tracer-bullet issues.
+5. Implement only after an issue is `ready-for-agent`.
 
-Skip ceremony for a small, direct request whose behavior and test seam are already clear.
+Skip this ceremony for a small, direct request with clear behavior and a clear test seam.
 
 ## Model lanes
 
+The top-level Pi session is the lead. Change its model with `/model` when required.
+
 | Lane | Primary | Provider fallback |
 |---|---|---|
-| Lead and planning | `lead`: GPT-5.6 Sol, high | Manually select `lead-qwen`: Qwen3.8 Max Preview |
-| Implementation | `implementer`: Qwen3.7 Plus, thinking | `implementer-openai`: GPT-5.6 Terra, medium |
-| Review A | `reviewer-gpt`: GPT-5.6 Sol, high | `reviewer-qwen`: Qwen3.8 Max Preview |
-| Review B | `reviewer-glm`: GLM-5.2, max | `reviewer-terra`: GPT-5.6 Terra, high |
-| Research | `researcher`: GPT-5.6 Sol, high | `researcher-qwen`: Qwen3.8 Max Preview |
-| Exploration and session metadata | Qwen3.6 Flash | Use the lead only if Flash is unavailable |
+| Lead and planning | GPT-5.6 Sol, high | `advisor-qwen`: Qwen3.8 Max Preview |
+| Implementation | `implementer`: Qwen3.7 Plus | `implementer-openai`: GPT-5.6 Terra |
+| Review A | `reviewer-sol`: GPT-5.6 Sol | `reviewer-qwen`: Qwen3.8 Max Preview |
+| Review B | `reviewer-glm`: GLM-5.2 | `reviewer-terra`: GPT-5.6 Terra |
+| Research | `researcher-sol`: GPT-5.6 Sol | `researcher-qwen`: Qwen3.8 Max Preview |
+| Exploration | built-in `Explore`: Qwen3.6 Flash | lead |
 
-Fallbacks are for provider failure, rate limiting, or exhausted quota only. Poor output is corrected in the same lane. The lead reports every provider switch and does not silently downgrade reasoning effort.
+Fallbacks are only for provider failure, rate limiting, exhausted quota, or a failed GLM tool-call probe. Correct poor output in the same lane. Report every provider switch.
 
-Qwen3.8 is a preview model. There is intentionally no Qwen3.7 Max reserve lane. Before relying on Review B, run a live GLM-5.2 probe that exercises file search, file reading, and a harmless shell command while the `max` variant is selected. Use `reviewer-terra` if tool calling or maximum-effort propagation is not reliable.
+Before relying on Review B, run a harmless GLM-5.2 probe that searches and reads files and runs `git status --short` at `max` thinking. Use `reviewer-terra` if tool calling or thinking propagation fails.
 
 ## Issue to pull request
 
-When directed to implement an eligible issue, the lead performs the following sequence without waiting for routine confirmations:
+When directed to implement an eligible issue, the lead:
 
-1. Read the complete issue, comments, labels, linked specs, domain glossary, relevant ADRs, and code.
-2. Confirm the issue has `ready-for-agent`, unless the user explicitly overrides the gate.
-3. Record the fixed base SHA and create `agent/<issue>-<slug>` in `/tmp/balaur-workers/<issue>-<slug>` with `git worktree add`.
-4. Delegate implementation with the absolute worktree path, acceptance criteria, constraints, and required checks.
-5. Inspect the diff and command evidence.
-6. Run Review A and Review B independently against the complete base-to-branch diff. Neither reviewer receives the other's output.
-7. Return actionable findings to the implementation lane, then rerun both full reviews. Allow at most two implementation-review revision cycles.
-8. If material findings remain after two cycles, stop and report the blocked state. Do not weaken or bypass the review gate.
-9. When both lanes pass, run required final checks, push the non-main branch, and open a pull request that links the issue and summarizes verification and both reviews.
+1. Reads the complete issue, comments, labels, linked specs, glossary, relevant ADRs, and code.
+2. Confirms `ready-for-agent`, unless the user explicitly overrides the gate.
+3. Records the base SHA and creates `agent/<issue>-<slug>` at `/tmp/balaur-workers/<issue>-<slug>` with `git worktree add`.
+4. Launches `implementer` with the absolute worktree path, acceptance criteria, constraints, and required checks.
+5. Inspects the actual diff and command evidence.
+6. Launches Review A and Review B independently and in parallel against the complete base-to-branch diff; neither receives the other's output.
+7. Resumes the implementer with actionable findings, then reruns both complete reviews. At most two revision cycles are allowed.
+8. Stops and reports a blocked state if material findings remain; never weakens the gate.
+9. Runs final checks, pushes only the non-main branch, and opens—but never merges—a pull request linking the issue.
 
-The lead never merges, force-pushes, pushes directly to `main`, rewrites unrelated history, or modifies unrelated user changes. Work starts sequentially even when multiple issues are unblocked; concurrency can be introduced only after the worktree and review flow proves reliable.
+If an implementer can no longer be resumed, launch a fresh one with the full issue, worktree path, findings, and current diff. Never continue implementation in the main checkout.
+
+Pi tool allowlists guide agents but are not an OS sandbox. The lead must inspect commands and diffs. Never force-push, push to `main`, reset/clean unrelated work, expose credentials, or let implementation/review agents push.
 
 ## Pull request content
 
-The pull request body includes:
-
-- the linked issue and user-visible result;
-- architectural or domain decisions;
-- tests and static checks actually run;
-- browser verification performed and browser-pending gaps;
-- Review A and Review B outcomes, including any fallback used; and
-- residual risks or deliberately deferred work.
-
-Opening the pull request is the end of agent autonomy. Merge remains a human decision.
+Include the linked issue and result, architectural/domain decisions, checks actually run, browser verification and pending gaps, both review outcomes and fallbacks, and residual risks. Opening the pull request ends agent autonomy; merge is a human decision.
 
 ## Credentials and startup
 
-`opencode.jsonc` reads the QwenCloud Token Plan key from `~/.config/opencode/qwen-token-plan.key`. The key file is private machine state and must never be committed, logged, displayed, or read by an agent tool.
+From a NetBird SSH terminal:
 
-OpenCode loads configuration only at startup. On the NixOS development host, `opencode.service` is the one always-on web server for this repository; use `./scripts/opencode-web restart` after changing `opencode.jsonc`, agent files, skills, or the key file. The trusted single-user service runs as `balaur` with normal host filesystem access and explicit passwordless `sudo`, so `./scripts/opencode-web password` must configure HTTP Basic authentication before applying its NixOS configuration. Use `./scripts/opencode-web apply` for NixOS changes initiated from an OpenCode terminal; it launches the rebuild as a transient system unit outside OpenCode's service context. Web and Desktop clients reconnect to port 4096 after the brief interruption. After restart, use `/models` to confirm the QwenCloud models and run the Qwen/GLM integration probes before issue work.
+```bash
+cd /home/balaur/projects/balaur
+pi
+```
+
+On first use, approve the repository with `/trust`, restart Pi, and let it install the reviewed project packages from `.pi/settings.json`. Authenticate with `/login openai-codex` and `/login qwen-token-plan`; Pi stores credentials in `~/.pi/agent/auth.json` with mode `0600`. Never commit, print, or expose that file. Use `/model` to confirm configured models and `/agents` to confirm agent definitions. Use `/reload` after resource changes, or restart if required. `/share` is opt-in and must not be used for sensitive sessions.
+
+Pi runs as the `balaur` user without a built-in sandbox and the account has passwordless `sudo`; treat every loaded package and agent command as trusted code. Disconnecting ends an in-flight terminal process, but completed session history can be resumed with `pi -c`.

@@ -1,6 +1,6 @@
 ---
 description: Implementation reviewer (qwen3.8-max-preview, high thinking) — reviews an executor's diff against the plan like a tech lead. Run in parallel with reviewer-sol; both verdicts are compared.
-model: qw/qwen3.8-max-preview
+model: qwen-token-plan/qwen3.8-max-preview
 thinking: high
 tools: read, bash, grep, find, ls
 prompt_mode: replace

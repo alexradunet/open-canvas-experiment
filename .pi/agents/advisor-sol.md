@@ -1,6 +1,6 @@
 ---
 description: Senior codebase advisor (GPT 5.6 Sol, high thinking) — audits the codebase and writes self-contained implementation plans using the improve skill. Run in parallel with advisor-qwen; compare both outputs before choosing a plan.
-model: openai/gpt-5.6-sol
+model: openai-codex/gpt-5.6-sol
 thinking: high
 skills: improve
 tools: read, bash, grep, find, ls, ext:pi-subagents/Agent

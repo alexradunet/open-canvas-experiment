@@ -1,6 +1,6 @@
 ---
 description: Senior codebase advisor (qwen3.8-max-preview, high thinking) — audits the codebase and writes self-contained implementation plans using the improve skill. Run in parallel with advisor-sol; compare both outputs before choosing a plan.
-model: qw/qwen3.8-max-preview
+model: qwen-token-plan/qwen3.8-max-preview
 thinking: high
 skills: improve
 tools: read, bash, grep, find, ls, ext:pi-subagents/Agent

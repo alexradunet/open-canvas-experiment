@@ -1,6 +1,6 @@
 ---
 description: Implementation reviewer (GPT 5.6 Sol, high thinking) — reviews an executor's diff against the plan like a tech lead. Run in parallel with reviewer-qwen; both verdicts are compared.
-model: openai/gpt-5.6-sol
+model: openai-codex/gpt-5.6-sol
 thinking: high
 tools: read, bash, grep, find, ls
 prompt_mode: replace

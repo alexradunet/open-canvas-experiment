@@ -337,46 +337,46 @@ Triage uses the canonical `needs-triage`, `needs-info`, `ready-for-agent`, `read
 
 This is a single-context repository: use the root `CONTEXT.md` glossary and the accepted decisions under `docs/adr/`. See `docs/agents/domain.md`.
 
-## 15. Self-hosted deployment (NetBird)
+## 15. Self-hosted development (NetBird)
 
-The development machine runs one dedicated OpenCode server and two Balaur instances as systemd services, accessible over NetBird:
+Pi is a system-installed terminal CLI, not a network service. Connect through NetBird SSH and start it in the repository:
+
+```bash
+cd /home/balaur/projects/balaur
+pi
+pi -c  # resume the latest session
+```
+
+The machine runs two Balaur systemd services:
 
 | Service | Port | Purpose |
 |---------|------|---------|
-| `opencode` | 4096 | Always-on OpenCode web server rooted in this repository |
 | `balaur-main` | 8080 | Main driver / production-like |
 | `balaur-dev` | 8081 | Development instance |
 
-All services are defined in `nixos_dev_env/configuration.nix` and bind to `0.0.0.0`. Firewall rules expose ports 4096, 8080, and 8081 on the `netbird0` interface only. The OpenCode service starts in `/home/balaur/projects/balaur`, loads the repository `opencode.jsonc`, and reads its Qwen credential from the private file configured there. It runs as user `balaur` without a systemd filesystem sandbox, auto-approves permissions that are not explicitly denied, and can elevate explicitly through passwordless `sudo`; HTTP Basic authentication with a password of at least 16 characters is therefore mandatory.
-
-Manage services:
+Both bind to `0.0.0.0`; firewall rules expose ports 8080 and 8081 only on `netbird0`. Each port is a separate browser origin, so IndexedDB vaults are isolated.
 
 ```bash
-./scripts/opencode-web password
-./scripts/opencode-web apply
-./scripts/opencode-web restart
-./scripts/opencode-web status
-./scripts/opencode-web logs
 sudo systemctl status balaur-main balaur-dev
 sudo systemctl restart balaur-main balaur-dev
 journalctl -u balaur-main -f
-```
-
-After changing `configuration.nix`, rebuild with:
-
-```bash
 sudo nixos-rebuild switch --flake ./nixos_dev_env
 ```
 
-When working through an OpenCode terminal, use `./scripts/opencode-web apply`; it launches the rebuild as a transient system unit outside OpenCode's read-only service sandbox. Run `nixos-rebuild` directly only from a normal host terminal.
+Agents may run this rebuild automatically after changing `nixos_dev_env/`; passwordless `sudo` is configured. Verify the NixOS closure builds first when practical.
 
-Rebuilding or restarting `opencode` disconnects web and Desktop clients briefly; they can reconnect to the same port and persisted sessions afterward. Do not start a second `opencode web` process on port 4096.
+Pi comes from the independently pinned `llm-agents` flake. Update it with:
 
-Each port is a separate browser origin, so IndexedDB vaults are isolated between instances.
+```bash
+nix flake update llm-agents --flake ./nixos_dev_env
+sudo nixos-rebuild switch --flake ./nixos_dev_env
+```
+
+Pi runs as `balaur`, has normal host access, and can elevate through passwordless `sudo`; it has no built-in sandbox. Review project packages before trusting them. A network disconnect terminates an in-flight request, but completed session history remains resumable with `pi -c`.
 
 ## 16. Git and deployment hygiene
 
-Keep changes scoped. Do not commit generated browser profiles, screenshots, logs, API keys, local databases, or temporary exports. Do not amend or reset. Do not commit or push unless explicitly asked, except while executing the user-approved issue-to-PR workflow in `docs/agents/development-workflow.md`; that workflow authorizes an isolated worktree, a non-main branch, commits, pushing that branch, and opening a pull request. Never force-push, merge, or push directly to `main`. Every push to `main` deploys the repository root through GitHub Pages.
+Keep changes scoped. Do not commit generated browser profiles, screenshots, logs, API keys, Pi auth/session/transcript state, `.pi/npm`, local databases, or temporary exports. Do not amend or reset. Do not commit or push unless explicitly asked, except while executing the user-approved issue-to-PR workflow in `docs/agents/development-workflow.md`; that workflow authorizes an isolated worktree, a non-main branch, commits, pushing that branch, and opening a pull request. A direct commit or push to `main` is allowed only when the user explicitly requests it; never force-push or merge without explicit instruction. Every push to `main` deploys the repository root through GitHub Pages.
 
 ## 17. Definition of done
 

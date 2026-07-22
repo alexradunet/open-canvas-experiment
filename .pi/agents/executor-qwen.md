@@ -1,6 +1,6 @@
 ---
 description: Plan executor (Qwen3-Coder-Flash, high thinking) — implements a self-contained plan from plans/ in an isolated git worktree. Coding-specific model, good for structured implementation. Use executor.md (Luna) for speed; use this for plans with heavy test-writing or multi-file coding.
-model: qw/qwen3-coder-flash
+model: qwen-token-plan/qwen3-coder-flash
 thinking: high
 tools: "*"
 isolation: worktree
