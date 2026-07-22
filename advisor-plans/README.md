@@ -16,7 +16,7 @@ honor its STOP conditions, and update your row when done.
 |------|-------|----------|--------|------------|--------|
 | 001  | Move "Add to canvas" out of the sidebar into an Add menu on the canvas action bar | P1 | M | — | DONE |
 | 002  | Make Herdr prompting, collection, and launch recovery race-safe | P1 | M | Stage 1 through `e3f23f6` | BLOCKED — superseded by plan 003 lifecycle hardening |
-| 003  | Close Issue #2’s Herdr bridge concurrency and recovery gaps | P1 | M–L | 002 through `1960f8a` | DONE |
+| 003  | Close Issue #2’s Herdr bridge concurrency and recovery gaps | P1 | M–L | 002 through `1960f8a` | BLOCKED — final reviews found remaining safety and semantic-validation gaps |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) | REJECTED (with one-line rationale)
 
@@ -48,12 +48,16 @@ Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) | REJE
   two-prompt smoke returned distinct results in retained pane `w1:p8`. Both
   final reviews still returned REVISE for concurrent mutation, failure-state,
   unsupported isolation, snapshot-validation, and collector hardening gaps.
-- **003** — executed 2026-07-22 in the same issue worktree from `1960f8a`.
-  The corrective cycle adds fail-fast per-handle leases, typed protocol/status
-  handling, strict latest-valid snapshots, explicit unsupported-role rejection,
-  boundary-aware JSONL recovery, bounded session discovery, and a dedicated
-  read-only smoke role. The 73-test focused suite passed five consecutive runs;
-  syntax and diff checks passed. Live Herdr scenarios remain assigned to the lead.
+- **003** — executed 2026-07-22 in the same issue worktree from `1960f8a`;
+  commits `9caf0f5` and `f70d89e`. The corrective cycle adds fail-fast
+  per-handle leases, typed protocol/status handling, stricter snapshots,
+  unsupported-role rejection, boundary-aware JSONL recovery, bounded session
+  discovery, and a read-only smoke role. The 73-test suite passed five executor
+  runs plus lead verification; the live two-prompt smoke passed and its pane was
+  closed after inspection. Final reviews still returned REVISE/BLOCK for an
+  unavoidable close TOCTOU, live-status prompting, empty-tool recursion denial,
+  snapshot/date and boundary-position semantics, replacement classification,
+  and malformed post-boundary message validation.
 
 ## Findings considered and rejected
 
