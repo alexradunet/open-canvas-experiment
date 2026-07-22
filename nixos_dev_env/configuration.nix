@@ -6,9 +6,26 @@
 
   networking.hostName = "nixos";
   networking.networkmanager.enable = true;
-  networking.firewall.interfaces.netbird0.allowedTCPPorts = [ 8080 ];
+  # Remote browsers must use HTTPS: Balaur's canonical-vault hashing depends
+  # on WebCrypto, which browsers withhold from plain HTTP non-localhost origins.
+  networking.firewall.interfaces.netbird0.allowedTCPPorts = [
+    443
+    2222
+  ];
 
-  services.openssh.enable = false;
+  # Native OpenSSH uses a separate NetBird-only port so Android clients such as
+  # Termux do not collide with NetBird's embedded SSH interception on port 22.
+  services.openssh = {
+    enable = true;
+    openFirewall = false;
+    ports = [ 2222 ];
+    settings = {
+      KbdInteractiveAuthentication = false;
+      PasswordAuthentication = false;
+      PermitRootLogin = "no";
+      X11Forwarding = false;
+    };
+  };
 
   services.netbird.clients.default = {
     name = "netbird";
@@ -18,7 +35,7 @@
     config = {
       ServerSSHAllowed = true;
       DisableSSHAuth = false;
-      EnableSSHRoot = false;
+      EnableSSHRoot = true;
       EnableSSHSFTP = false;
       EnableSSHLocalPortForwarding = false;
       EnableSSHRemotePortForwarding = false;
@@ -31,6 +48,36 @@
 
   # The setup key is needed only for initial enrollment, not normal startup.
   systemd.services.netbird-login.unitConfig.ConditionPathExists = "/etc/netbird/setup-key";
+
+  services.caddy = {
+    enable = true;
+    # Client devices trust this CA explicitly; the sandboxed Caddy service must
+    # not try (and fail) to modify the development host's system trust store.
+    globalConfig = "skip_install_trust";
+    virtualHosts."nixos.netbird.cloud".extraConfig = ''
+      tls internal
+
+      # The root certificate is public material. Serving it here gives a new
+      # NetBird client a bounded bootstrap path; the CA private key remains in
+      # Caddy's protected state directory.
+      handle /balaur-dev-ca.crt {
+        root * /var/lib/caddy/.local/share/caddy/pki/authorities/local
+        rewrite * /root.crt
+        header Content-Type application/x-x509-ca-cert
+        header Content-Disposition "attachment; filename=balaur-dev-ca.crt"
+        file_server
+      }
+
+      handle {
+        reverse_proxy 127.0.0.1:8080
+      }
+    '';
+  };
+
+  systemd.services.caddy = {
+    after = [ "balaur-dev.service" "netbird.service" ];
+    wants = [ "balaur-dev.service" ];
+  };
 
   systemd.services.balaur-dev = {
     description = "Balaur development server with live reload";
@@ -45,8 +92,9 @@
       WorkingDirectory = "/home/balaur/projects/balaur";
       ExecStart = "${pkgs.nodejs_24}/bin/node scripts/balaur-dev.mjs";
       Environment = [
-        "HOST=0.0.0.0"
+        "HOST=127.0.0.1"
         "PORT=8080"
+        "PUBLIC_URL=https://nixos.netbird.cloud"
       ];
       Restart = "on-failure";
       RestartSec = "5s";
@@ -84,6 +132,9 @@
   users.users.balaur = {
     isNormalUser = true;
     description = "balaur";
+    openssh.authorizedKeys.keys = [
+      "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPOkyb6k2hdZHcP2gPb24NEroog7e26xA3IKGKkcv8qe u0_a478@localhost"
+    ];
     extraGroups = [
       "balaur-secrets"
       "networkmanager"

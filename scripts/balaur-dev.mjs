@@ -76,11 +76,16 @@ function netbirdStatusValue(key) {
   }
 }
 
-function accessLines(host, port) {
+function accessLines(host, port, publicUrl = "") {
   const lines = [];
   const localHost = host === "0.0.0.0" || host === "::" ? "localhost" : host;
   lines.push(`Local (on this machine):    http://${localHost}:${port}`);
   if (localHost !== "localhost") lines.push(`Local loopback:             http://localhost:${port}`);
+
+  if (publicUrl) {
+    lines.push(`NetBird HTTPS:              ${publicUrl.replace(/\/$/, "")}`);
+    return lines;
+  }
 
   const netbirdIp = netbirdInterfaceAddress();
   const netbirdFqdn = (netbirdStatusValue("FQDN") || "").replace(/\.$/, "");
@@ -127,12 +132,14 @@ server.listen(port, host, () => {
       `Repository: ${root}`,
       `Bound to:   ${host}:${activePort}`,
       "",
-      ...accessLines(host, activePort),
+      ...accessLines(host, activePort, process.env.PUBLIC_URL),
       "",
       "Live reload: enabled",
       "",
       "Notes:",
-      "  The NixOS firewall exposes this port only on the NetBird interface.",
+      process.env.PUBLIC_URL
+        ? "  Remote access is provided by the configured HTTPS reverse proxy."
+        : "  Expose this HTTP port only on a trusted development interface.",
       "  Press Ctrl+C to stop.",
       "",
     ].join("\n"),

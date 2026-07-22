@@ -354,14 +354,15 @@ The machine runs one Balaur development service:
 
 | Service | Port | Purpose |
 |---------|------|---------|
-| `balaur-dev` | 8080 | Mutable checkout with browser live reload |
+| `caddy` | 443 on `netbird0` | NetBird-only HTTPS termination with the local development CA |
+| `balaur-dev` | 8080 on loopback | Mutable checkout with browser live reload |
 
-It binds to `0.0.0.0`, while the firewall exposes port 8080 only on `netbird0`. The service log prints the local and available NetBird URLs at startup. File changes reload connected browser tabs automatically.
+Open <https://nixos.netbird.cloud>. Plain NetBird HTTP is intentionally unavailable because browsers withhold the WebCrypto hashing API from non-secure origins. Caddy proxies HTTPS and WebSocket traffic to the loopback development server; the firewall exposes only port 443 on `netbird0`. Each client must trust the root certificate served at `/balaur-dev-ca.crt` once, as described in `README.md`. File changes reload connected browser tabs automatically.
 
 ```bash
-sudo systemctl status balaur-dev
-sudo systemctl restart balaur-dev
-journalctl -u balaur-dev -f
+sudo systemctl status balaur-dev caddy
+sudo systemctl restart balaur-dev caddy
+journalctl -u balaur-dev -u caddy -f
 sudo nixos-rebuild switch --flake ./nixos_dev_env
 ```
 

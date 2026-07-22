@@ -10,7 +10,7 @@ Balaur is an installable, progressively enhanced static web application. Offline
 - `sw.js` maintains the versioned `orbit-shell-v12` cache.
 - `IndexedDbVault` stores canonical user files in IndexedDB; the Service Worker does not intercept or cache those records.
 
-Service Worker registration failure does not prevent the online application from starting. A separate Custom Element registration failure also leaves a controller-rendered native fallback for navigation, Today tasks, inspector actions, Add controls, readable component cards, and inactive non-executing widgets while canonical boot and saves continue. Service Workers are available on HTTPS and localhost.
+Service Worker registration failure does not prevent the online application from starting. A separate Custom Element registration failure also leaves a controller-rendered native fallback for navigation, Today tasks, inspector actions, Add controls, readable component cards, and inactive non-executing widgets while canonical boot and saves continue. Service Workers are available on HTTPS and localhost. The NetBird development endpoint therefore terminates trusted HTTPS at Caddy; plain remote HTTP would also withhold the WebCrypto API required for canonical content hashing.
 
 ## Cache strategy
 
