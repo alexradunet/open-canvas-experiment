@@ -15,15 +15,21 @@ honor its STOP conditions, and update your row when done.
 | Plan | Title | Priority | Effort | Depends on | Status |
 |------|-------|----------|--------|------------|--------|
 | 001  | Move "Add to canvas" out of the sidebar into an Add menu on the canvas action bar | P1 | M | — | DONE |
+| 002  | Make Herdr prompting, collection, and launch recovery race-safe | P1 | M | Stage 1 through `e3f23f6` | BLOCKED — superseded by plan 003 lifecycle hardening |
+| 003  | Close Issue #2’s Herdr bridge concurrency and recovery gaps | P1 | M–L | 002 through `1960f8a` | BLOCKED — final reviews found remaining safety and semantic-validation gaps |
+| 004  | Resolve Herdr bridge final-review safety gaps | P1 | M–L | 003 through `485900a` | DONE |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) | REJECTED (with one-line rationale)
 
 ## Dependency notes
 
-- None yet — plan 001 is self-contained. It is pure presentation/interaction:
-  it does not touch storage, the Service Worker, or the file-canonical
-  migration in `plans/`, so it can land before, after, or alongside those
-  phases without coordination.
+- Plan 001 is self-contained. It is pure presentation/interaction and does not
+  interact with the Herdr bridge.
+- Plan 002 is a corrective continuation of GitHub issue #2 after both final
+  reviewers rejected Stage 1 at `e3f23f6`.
+- Plan 003 is the Sol-authored follow-up for the remaining concurrency,
+  recovery, isolation, snapshot, and collector findings. It must pass before
+  the Stage 1 PR can open and before Stage 2 begins.
 
 ## Execution record
 
@@ -37,6 +43,34 @@ Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) | REJE
   `pi-agent-bbab15b0-714d-452` (contains both commits). Verified: 149/149
   storage tests, full browser-check smoke incl. offline and 380px width,
   functional eval probes, and geometry probes in both directions.
+- **002** — executed 2026-07-22 in `/tmp/balaur-workers/2-herdr-agent-bridge`
+  from `e3f23f6`; commits `a7e8f9d` and `cfad5f0`. The focused Herdr bridge
+  suite passes 46/46, syntax and diff checks pass, and the real visible-pane
+  two-prompt smoke returned distinct results in retained pane `w1:p8`. Both
+  final reviews still returned REVISE for concurrent mutation, failure-state,
+  unsupported isolation, snapshot-validation, and collector hardening gaps.
+- **003** — executed 2026-07-22 in the same issue worktree from `1960f8a`;
+  commits `9caf0f5` and `f70d89e`. The corrective cycle adds fail-fast
+  per-handle leases, typed protocol/status handling, stricter snapshots,
+  unsupported-role rejection, boundary-aware JSONL recovery, bounded session
+  discovery, and a read-only smoke role. The 73-test suite passed five executor
+  runs plus lead verification; the live two-prompt smoke passed and its pane was
+  closed after inspection. Final reviews still returned REVISE/BLOCK for an
+  unavoidable close TOCTOU, live-status prompting, empty-tool recursion denial,
+  snapshot/date and boundary-position semantics, replacement classification,
+  and malformed post-boundary message validation.
+- **004** — executed 2026-07-22 in the same issue worktree from `485900a`.
+  Automated bridge close is fail-closed under protocol 17; handles and panes
+  remain for operator inspection and manual closure. The corrective changes add
+  fresh pinned-status prompt admission, `--no-tools` empty-list denial, calendar
+  timestamps, exact physical boundaries, complete identity-conflict
+  classification, strict post-boundary AgentMessage validation, and resolved
+  ID-backed smoke boundaries. Implementation commits `00c12e2` and `cf8aac1`.
+  The focused suite passed five consecutive runs at **83/83**; syntax and
+  fixed-base diff checks passed; a visible two-prompt smoke returned distinct
+  nonce results with an exact second boundary. Independent Sol and Qwen final
+  reviews both approved `cf8aac1`. Prompt identity/status and submission remain
+  non-atomic under Herdr protocol 17.
 
 ## Findings considered and rejected
 
