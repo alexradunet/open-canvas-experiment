@@ -440,7 +440,7 @@
 
   .canvas-tools {
     position: absolute;
-    top: 16px;
+    bottom: 16px;
     left: 50%;
     display: flex;
     gap: 2px;
@@ -467,7 +467,7 @@
   .add-menu-toggle[aria-expanded="true"] { background: var(--balaur-surface-oak); color: var(--balaur-action-primary); }
   .add-menu-panel {
     position: absolute;
-    top: calc(100% + 9px);
+    bottom: calc(100% + 9px);
     right: 0;
     z-index: 30;
     display: grid;

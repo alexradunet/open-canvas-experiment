@@ -103,7 +103,7 @@
     }
     .add-menu-panel:not([hidden]) {
       opacity: 0;
-      transform: translateY(calc(-1 * var(--balaur-distance-panel)));
+      transform: translateY(var(--balaur-distance-panel));
     }
   }
 
