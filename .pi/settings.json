@@ -13,7 +13,6 @@
   ],
   "packages": [
     "npm:@tintinweb/pi-subagents",
-    "npm:pi-web-access",
-    "git:github.com/DietrichGebert/ponytail"
+    "npm:pi-web-access"
   ]
 }
