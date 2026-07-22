@@ -6,10 +6,7 @@
 
   networking.hostName = "nixos";
   networking.networkmanager.enable = true;
-  networking.firewall.interfaces.netbird0.allowedTCPPorts = [
-    8080
-    8081
-  ];
+  networking.firewall.interfaces.netbird0.allowedTCPPorts = [ 8080 ];
 
   services.openssh.enable = false;
 
@@ -35,46 +32,21 @@
   # The setup key is needed only for initial enrollment, not normal startup.
   systemd.services.netbird-login.unitConfig.ConditionPathExists = "/etc/netbird/setup-key";
 
-  systemd.services.balaur-main = {
-    description = "Balaur main instance";
-    after = [ "network-online.target" ];
+  systemd.services.balaur-dev = {
+    description = "Balaur development server with live reload";
+    after = [ "network-online.target" "netbird.service" ];
     wants = [ "network-online.target" ];
     wantedBy = [ "multi-user.target" ];
+    path = [ pkgs.netbird ];
 
     serviceConfig = {
       User = "balaur";
       Group = "users";
       WorkingDirectory = "/home/balaur/projects/balaur";
-      ExecStart = "${pkgs.nodejs_24}/bin/node server.mjs";
+      ExecStart = "${pkgs.nodejs_24}/bin/node scripts/balaur-dev.mjs";
       Environment = [
         "HOST=0.0.0.0"
         "PORT=8080"
-      ];
-      Restart = "on-failure";
-      RestartSec = "5s";
-
-      NoNewPrivileges = true;
-      PrivateTmp = true;
-      ProtectSystem = "strict";
-      ProtectHome = "tmpfs";
-      BindPaths = [ "/home/balaur/projects/balaur" ];
-    };
-  };
-
-  systemd.services.balaur-dev = {
-    description = "Balaur development instance";
-    after = [ "network-online.target" ];
-    wants = [ "network-online.target" ];
-    wantedBy = [ "multi-user.target" ];
-
-    serviceConfig = {
-      User = "balaur";
-      Group = "users";
-      WorkingDirectory = "/home/balaur/projects/balaur";
-      ExecStart = "${pkgs.nodejs_24}/bin/node server.mjs";
-      Environment = [
-        "HOST=0.0.0.0"
-        "PORT=8081"
       ];
       Restart = "on-failure";
       RestartSec = "5s";
@@ -107,15 +79,23 @@
     variant = "";
   };
 
+  users.groups.balaur-secrets = { };
+
   users.users.balaur = {
     isNormalUser = true;
     description = "balaur";
     extraGroups = [
+      "balaur-secrets"
       "networkmanager"
       "wheel"
     ];
     packages = with pkgs; [ ];
   };
+
+  systemd.tmpfiles.rules = [
+    "d /etc/balaur 0750 root balaur-secrets - -"
+    "f /etc/balaur/netbird.env 0640 root balaur-secrets - -"
+  ];
 
   security.sudo.wheelNeedsPassword = false;
 

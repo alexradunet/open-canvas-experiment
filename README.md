@@ -40,6 +40,15 @@ node server.mjs
 
 Then open <http://localhost:4173>. Set `PORT` or `HOST` to override the defaults, for example `PORT=4187 node server.mjs`. Service Workers are available on localhost, so after the first successful load the application shell also works offline.
 
+On the NixOS development host, `balaur-dev` serves the checkout on port `8080`, prints its NetBird URLs in the service log, and reloads connected browsers when files change:
+
+```bash
+sudo systemctl restart balaur-dev
+journalctl -u balaur-dev -f
+```
+
+Port `8080` is exposed only through the `netbird0` interface.
+
 ## Controls
 
 | Action | Control |
