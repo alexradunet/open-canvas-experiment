@@ -13,7 +13,7 @@ test("exports a static server factory", () => {
   assert.equal(typeof createStaticServer, "function");
 });
 
-async function withServer(run) {
+async function withServer(run, options = {}) {
   const parent = await mkdtemp(join(tmpdir(), "balaur-server-"));
   const root = join(parent, "public");
   await mkdir(root);
@@ -21,7 +21,7 @@ async function withServer(run) {
   await writeFile(join(root, "app.js"), "export const ready = true;\n");
   await writeFile(join(parent, "secret.txt"), "not public");
 
-  const server = createStaticServer({ root });
+  const server = createStaticServer({ root, ...options });
   await new Promise((resolve, reject) => {
     server.once("error", reject);
     server.listen(0, "127.0.0.1", resolve);
@@ -49,6 +49,18 @@ test("serves modules with a JavaScript content type", async () => {
     const response = await fetch(`${origin}/app.js`);
     assert.equal(response.status, 200);
     assert.match(response.headers.get("content-type"), /^text\/javascript;/);
+  });
+});
+
+test("injects the reload client only in live-reload mode", async () => {
+  await withServer(async origin => {
+    const response = await fetch(`${origin}/`);
+    assert.match(await response.text(), /new EventSource\("\/.balaur\/live-reload"\)/);
+  }, { liveReload: true });
+
+  await withServer(async origin => {
+    const response = await fetch(`${origin}/`);
+    assert.doesNotMatch(await response.text(), /EventSource/);
   });
 });
 

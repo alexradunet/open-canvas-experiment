@@ -350,21 +350,33 @@ pi -c  # resume the latest Pi session
 
 Herdr is pinned by `nixos_dev_env/flake.nix`. NixOS user activation installs its Pi lifecycle/session integration and creates an SSH-oriented `~/.config/herdr/config.toml` only when that file is absent, so later user customization is preserved. Detach from Herdr with `Ctrl+B`, then `Q`; its panes and agents continue running.
 
-The machine runs two Balaur systemd services:
+The machine runs one Balaur development service:
 
 | Service | Port | Purpose |
 |---------|------|---------|
-| `balaur-main` | 8080 | Main driver / production-like |
-| `balaur-dev` | 8081 | Development instance |
+| `caddy` | 443 on `netbird0` | NetBird-only HTTPS termination with the local development CA |
+| `balaur-dev` | 8080 on loopback | Mutable checkout with browser live reload |
 
-Both bind to `0.0.0.0`; firewall rules expose ports 8080 and 8081 only on `netbird0`. Each port is a separate browser origin, so IndexedDB vaults are isolated.
+Open <https://nixos.netbird.cloud>. Plain NetBird HTTP is intentionally unavailable because browsers withhold the WebCrypto hashing API from non-secure origins. Caddy proxies HTTPS and WebSocket traffic to the loopback development server; the firewall exposes only port 443 on `netbird0`. Each client must trust the root certificate served at `/balaur-dev-ca.crt` once, as described in `README.md`. File changes reload connected browser tabs automatically.
 
 ```bash
-sudo systemctl status balaur-main balaur-dev
-sudo systemctl restart balaur-main balaur-dev
-journalctl -u balaur-main -f
+sudo systemctl status balaur-dev caddy
+sudo systemctl restart balaur-dev caddy
+journalctl -u balaur-dev -u caddy -f
 sudo nixos-rebuild switch --flake ./nixos_dev_env
 ```
+
+The project-local NetBird Pi extension requires a manually created NetBird service user with the **Network Admin** role and a Personal Access Token. NixOS creates `/etc/balaur/netbird.env` as `root:balaur-secrets` mode `0640`; it never places the token in the Nix store or a systemd environment. A human operator installs the token with `sudoedit`, then verifies without printing it:
+
+```bash
+sudoedit /etc/balaur/netbird.env
+sudo chown root:balaur-secrets /etc/balaur/netbird.env
+sudo chmod 0640 /etc/balaur/netbird.env
+# After the Nix rebuild, reconnect SSH before starting Pi so the new group applies.
+# Then run /netbird doctor inside Pi.
+```
+
+For rotation, create the replacement PAT first, replace the file contents using `sudoedit`, run `/netbird doctor`, and only then revoke the old PAT in NetBird. Never print, source, log, commit, or pass either token through a command argument, Nix expression, systemd environment, issue, chat, or Pi session. See `docs/adr/0003-netbird-pi-extension.md` and `.pi/extensions/balaur-netbird/README.md`.
 
 Agents may run this rebuild automatically after changing `nixos_dev_env/`; passwordless `sudo` is configured. Verify the NixOS closure builds first when practical.
 

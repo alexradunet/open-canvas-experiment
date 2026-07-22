@@ -66,6 +66,24 @@ On first use, approve the repository with `/trust`, restart Pi, and let it insta
 
 Pi runs as the `balaur` user without a built-in sandbox and the account has passwordless `sudo`; treat every loaded package and agent command as trusted code. Disconnecting ends an in-flight terminal process, but completed session history can be resumed with `pi -c`.
 
+### NetBird Cloud extension credential
+
+The project-local `.pi/extensions/balaur-netbird/` extension uses a dedicated NetBird **service user** with the **Network Admin** role. A human operator must create that service user and its Personal Access Token in the NetBird dashboard. Never use an account-owner or human-user token.
+
+Apply the NixOS configuration to create the protected group, directory, and empty credential file, then edit it without placing the token in shell history:
+
+```bash
+sudo nixos-rebuild switch --flake ./nixos_dev_env
+# Disconnect and reconnect NetBird SSH so balaur receives the new group.
+sudoedit /etc/balaur/netbird.env
+sudo chown root:balaur-secrets /etc/balaur/netbird.env
+sudo chmod 0640 /etc/balaur/netbird.env
+```
+
+The file contains only the `NETBIRD_API_TOKEN` assignment. Never print, source, copy, or inspect it through Pi, logs, issues, chat, command arguments, Nix expressions, or systemd environment settings. A fresh login is required after the group is first created; restarting Pi or `/reload` cannot refresh supplementary groups. After reconnecting, start Pi and use `/netbird doctor` to verify local readiness and Cloud access without exposing the credential.
+
+To rotate, create a replacement PAT for the same service user, replace the file contents with `sudoedit`, verify with `/netbird doctor`, and only then revoke the old PAT in NetBird. Do not print either token. See [ADR 0003](../adr/0003-netbird-pi-extension.md) and the [extension README](../../.pi/extensions/balaur-netbird/README.md).
+
 ## Herdr agent bridge
 
 The project-local Pi extension at `.pi/extensions/herdr-agents/` starts and controls interactive Pi workers in visible, persistent Herdr panes. It is distinct from and does not remove `npm:@tintinweb/pi-subagents`, which remains installed until the final cutover.

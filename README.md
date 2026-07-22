@@ -40,6 +40,32 @@ node server.mjs
 
 Then open <http://localhost:4173>. Set `PORT` or `HOST` to override the defaults, for example `PORT=4187 node server.mjs`. Service Workers are available on localhost, so after the first successful load the application shell also works offline.
 
+On the NixOS development host, `balaur-dev` serves the checkout with live reload behind a NetBird-only HTTPS endpoint:
+
+```bash
+sudo systemctl restart balaur-dev caddy
+journalctl -u balaur-dev -u caddy -f
+```
+
+Open <https://nixos.netbird.cloud>. The backend listens only on loopback port `8080`; the firewall exposes HTTPS on port `443` and key-only OpenSSH on port `2222` only through `netbird0`. HTTPS is required because canonical-vault content hashing uses secure-context WebCrypto.
+
+From an enrolled Android device with the NetBird VPN connected, Termux can use native OpenSSH without colliding with NetBird's embedded SSH service on port `22`:
+
+```bash
+pkg install openssh
+ssh -p 2222 balaur@100.124.236.195
+```
+
+The corresponding public key must be declared under `users.users.balaur.openssh.authorizedKeys` in `nixos_dev_env/configuration.nix`. Native OpenSSH password, keyboard-interactive, and root logins remain disabled.
+
+Caddy uses a development CA that each client device must trust once. While connected to the expected NetBird peer, download its public root certificate (the initial `--insecure` is only for this bootstrap request), install it in the operating system or browser trust store, then restart the browser:
+
+```bash
+curl --insecure https://nixos.netbird.cloud/balaur-dev-ca.crt --output balaur-dev-ca.crt
+```
+
+On Debian/Ubuntu, copy it to `/usr/local/share/ca-certificates/balaur-dev-ca.crt` and run `sudo update-ca-certificates`. On macOS, import it into the System keychain and mark it trusted. On Windows, import it into **Trusted Root Certification Authorities**. If `/var/lib/caddy` is erased, Caddy creates a new CA and clients must replace the old certificate.
+
 ## Controls
 
 | Action | Control |
