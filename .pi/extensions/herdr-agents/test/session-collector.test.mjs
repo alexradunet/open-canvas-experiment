@@ -21,13 +21,13 @@ describe('Pi v3 session collection', () => {
 
   it('binds collection to a post-boundary user turn instead of returning an old terminal result', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'pi-boundary-'));
-    const path = join(dir, 'session.jsonl');
+    const path = join(dir, 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa.jsonl');
     const header = { type: 'session', id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa' };
     const oldUser = { type: 'message', id: 'u-old', message: { role: 'user', content: 'old' } };
     const oldAnswer = { type: 'message', id: 'a-old', message: { role: 'assistant', content: [{ type: 'text', text: 'old answer' }], stopReason: 'stop', usage } };
     await writeFile(path, [header, oldUser, oldAnswer].map(JSON.stringify).join('\n') + '\n');
     try {
-      const boundary = await captureSessionBoundary(path);
+      const boundary = await captureSessionBoundary({ kind: 'path', value: path });
       await writeFile(path, JSON.stringify({ type: 'message', id: 'u-new', message: { role: 'user', content: 'new' } }) + '\n', { flag: 'a' });
       const partial = await collectSessionResultAfterBoundary(path, boundary);
       assert.equal(partial.stopReason, 'incomplete');
@@ -48,6 +48,21 @@ describe('Pi v3 session collection', () => {
       await assert.rejects(collectSessionResultAfterBoundary(path, { sessionId: header.id, anchorId: 'anchor' }), /header changed/);
       await writeFile(path, [header, { type: 'message', id: 'anchor', message: { role: 'user' } }].map(JSON.stringify).join('\n') + '\n' + JSON.stringify({ type: 'message', id: 'partial', message: { role: 'assistant', stopReason: 'stop' } }));
       assert.equal((await collectSessionResultAfterBoundary(path, { sessionId: header.id, anchorId: 'anchor' })).stopReason, 'incomplete');
+    } finally { await rm(dir, { recursive: true, force: true }); }
+  });
+
+  it('uses a header-only boundary for a fresh absent path and never returns a stale result', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'pi-fresh-boundary-')); const path = join(dir, 'dddddddd-dddd-dddd-dddd-dddddddddddd.jsonl');
+    const session = { kind: 'path', value: path };
+    try {
+      const boundary = await captureSessionBoundary(session);
+      assert.deepEqual(boundary, { sessionId: 'dddddddd-dddd-dddd-dddd-dddddddddddd', anchorId: null });
+      await writeFile(path, [
+        { type: 'session', id: boundary.sessionId },
+        { type: 'message', id: 'u-first', message: { role: 'user', content: 'first' } },
+        { type: 'message', id: 'a-first', message: { role: 'assistant', content: [{ type: 'text', text: 'fresh result' }], stopReason: 'stop', usage } },
+      ].map(JSON.stringify).join('\n') + '\n');
+      assert.equal((await collectSessionResultAfterBoundary(path, boundary)).text, 'fresh result');
     } finally { await rm(dir, { recursive: true, force: true }); }
   });
 

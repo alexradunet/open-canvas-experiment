@@ -15,7 +15,7 @@ let stubDir;
 
 class FakeHerdr {
   constructor(options = {}) { this.options = options; this.requests = []; this.name = ''; this.getCount = 0; this.path = `${tmpdir()}/herdr-registered-${process.pid}-${Date.now()}-${Math.random()}.sock`; }
-  agent(name = this.name, session = this.options.session ?? { kind: 'path', value: sessionPath }) { return { name, pane_id: 'w1:p2', workspace_id: 'w1', tab_id: 'w1:t1', terminal_id: 'term-2', agent_status: this.options.agentStatus ?? 'idle', interactive_ready: true, launch_pending: false, agent_session: { source: 'herdr:pi', agent: 'pi', ...session } }; }
+  agent(name = this.name, session = this.options.session ?? { kind: 'id', value: '11111111-1111-1111-1111-111111111111' }) { return { name, pane_id: 'w1:p2', workspace_id: 'w1', tab_id: 'w1:t1', terminal_id: 'term-2', agent_status: this.options.agentStatus ?? 'idle', interactive_ready: true, launch_pending: false, agent_session: { source: 'herdr:pi', agent: 'pi', ...session } }; }
   response(request) {
     const custom = this.options.handlers?.[request.method]; if (custom) return custom(request, this);
     switch (request.method) {
@@ -62,7 +62,7 @@ async function startWorker(tool, ctx) { const result = await tool.execute('start
 
 describe('registered herdr_agent extension acceptance matrix', { concurrency: false }, () => {
   it('invokes registered start and every handle action against fake Herdr', async () => {
-    const dir = await mkdtemp(resolve(tmpdir(), 'registered-session-')); const currentSession = resolve(dir, 'session.jsonl'); await writeFile(currentSession, await readFile(sessionPath));
+    const dir = await mkdtemp(resolve(tmpdir(), 'registered-session-')); const currentSession = resolve(dir, '11111111-1111-1111-1111-111111111111.jsonl'); await writeFile(currentSession, await readFile(sessionPath));
     const server = new FakeHerdr({ session: { kind: 'path', value: currentSession } }); await server.start();
     try {
       const { tool, ctx } = await loadRegisteredTool(server); const handle = await startWorker(tool, ctx);
@@ -106,6 +106,30 @@ describe('registered herdr_agent extension acceptance matrix', { concurrency: fa
     } finally { await server.stop(); }
   });
 
+  it('hydrates a recoverable provisional handle exactly once when status finds its delayed session', async () => {
+    const server = new FakeHerdr({ handlers: { 'agent.get': (request, fake) => { fake.getCount++; const agent = fake.agent(request.params.target); if (fake.getCount <= 2) delete agent.agent_session; return { type: 'agent_info', agent }; } } }); await server.start();
+    try {
+      const { tool, ctx } = await loadRegisteredTool(server); const controller = new AbortController(); setTimeout(() => controller.abort(), 25);
+      const started = await tool.execute('start', { action: 'start', role: 'executor' }, controller.signal, undefined, ctx);
+      const handle = started.details.handle;
+      const recovered = await tool.execute('status', { action: 'status', handle }, undefined, undefined, ctx);
+      assert.equal(recovered.details.handles[0].status, 'idle');
+      assert.equal(recovered.details.handles[0].sessionKind, 'id');
+      assert.equal(recovered.details.handles[0].error, undefined);
+    } finally { await server.stop(); }
+  });
+
+  it('never rebinds a recoverable provisional handle to a mismatched terminal', async () => {
+    const server = new FakeHerdr({ handlers: { 'agent.get': (request, fake) => { fake.getCount++; const agent = fake.agent(request.params.target); if (fake.getCount <= 2) delete agent.agent_session; else agent.terminal_id = 'other-terminal'; return { type: 'agent_info', agent }; } } }); await server.start();
+    try {
+      const { tool, ctx } = await loadRegisteredTool(server); const controller = new AbortController(); setTimeout(() => controller.abort(), 25);
+      const started = await tool.execute('start', { action: 'start', role: 'executor' }, controller.signal, undefined, ctx);
+      const recovered = await tool.execute('status', { action: 'status', handle: started.details.handle }, undefined, undefined, ctx);
+      assert.equal(recovered.details.handles[0].status, 'replaced');
+      assert.equal(recovered.details.handles[0].sessionKind, undefined);
+    } finally { await server.stop(); }
+  });
+
   it('rejects a numeric protocol mismatch through registered start', async () => {
     const server = new FakeHerdr({ protocol: 16 }); await server.start();
     try { const { tool, ctx } = await loadRegisteredTool(server); await assert.rejects(startWorker(tool, ctx), /protocol\/capability mismatch \(protocol 16\)/); } finally { await server.stop(); }
@@ -131,7 +155,7 @@ describe('registered herdr_agent extension acceptance matrix', { concurrency: fa
   });
 
   it('ignores a malformed real session JSONL record and collects its later terminal Pi-v3 message', async () => {
-    const dir = await mkdtemp(resolve(tmpdir(), 'bad-pi-')); const bad = resolve(dir, 'bad.jsonl');
+    const dir = await mkdtemp(resolve(tmpdir(), 'bad-pi-')); const bad = resolve(dir, 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb.jsonl');
     await writeFile(bad, JSON.stringify({ type: 'session', id: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb' }) + '\n' + JSON.stringify({ type: 'message', id: 'old', message: { role: 'assistant', content: [{ type: 'text', text: 'old' }], stopReason: 'stop', usage: {} } }) + '\n{bad json}\n');
     const server = new FakeHerdr({ session: { kind: 'path', value: bad } }); await server.start();
     try { const { tool, ctx } = await loadRegisteredTool(server); const handle = await startWorker(tool, ctx); await tool.execute('prompt', { action: 'prompt', handle, prompt: 'recover' }, undefined, undefined, ctx); await appendFile(bad, JSON.stringify({ type: 'message', id: 'u-new', message: { role: 'user', content: 'recover' } }) + '\n' + JSON.stringify({ type: 'message', id: 'a-new', message: { role: 'assistant', content: [{ type: 'text', text: 'recovered' }], stopReason: 'stop', usage: {} } }) + '\n'); const result = await tool.execute('collect', { action: 'collect', handle }, undefined, undefined, ctx); assert.equal(result.content[0].text, 'recovered'); } finally { await server.stop(); await rm(dir, { recursive: true, force: true }); }

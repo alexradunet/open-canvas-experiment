@@ -49,13 +49,30 @@ export async function waitForPiSessionReference(session, timeoutMs = 10000, sign
 }
 
 /** Capture a durable, complete-record boundary before bridge prompt submission. */
-export async function captureSessionBoundary(filePath) {
-  const entries = await readJsonlEntries(filePath);
-  const header = entries.find((entry) => entry?.type === 'session' && typeof entry.id === 'string' && entry.id);
-  if (!header) throw new Error('Pi session header is missing or invalid');
+export async function captureSessionBoundary(session, filePath) {
+  const sessionId = sessionUuid(session);
+  const path = filePath || (session.kind === 'path' ? session.value : undefined);
+  if (!path) return { sessionId, anchorId: null };
+  let entries;
+  try { entries = await readJsonlEntries(path); } catch (error) {
+    // A fresh idle Pi worker may not create its JSONL file until this first
+    // prompt. The pinned session UUID is a safe header-only boundary.
+    if (error?.code === 'ENOENT' || /ENOENT/.test(String(error?.message))) return { sessionId, anchorId: null };
+    throw error;
+  }
+  const headers = entries.filter((entry) => entry?.type === 'session' && typeof entry.id === 'string');
+  if (headers.length !== 1 || headers[0].id !== sessionId) throw new Error('Pi session header changed or is invalid');
   const last = entries.at(-1);
   if (!last || typeof last.id !== 'string' || !last.id) throw new Error('Pi session has no complete entry ID for prompt boundary');
-  return { sessionId: header.id, anchorId: last.id };
+  return { sessionId, anchorId: last.id };
+}
+
+function sessionUuid(session) {
+  if (!session || (session.kind !== 'id' && session.kind !== 'path') || typeof session.value !== 'string') throw new Error('invalid Pi session reference');
+  if (session.kind === 'id' && SESSION_ID_RE.test(session.value)) return session.value;
+  const suffix = session.kind === 'path' && session.value.match(new RegExp(`(${SESSION_ID_RE.source.slice(1, -1)})\\.jsonl$`, 'i'));
+  if (suffix) return suffix[1];
+  throw new Error('Pi session reference has no strict UUID');
 }
 
 export async function collectSessionResult(filePath) {
@@ -63,10 +80,11 @@ export async function collectSessionResult(filePath) {
 }
 
 export async function collectSessionResultAfterBoundary(filePath, boundary) {
-  if (!boundary?.sessionId || !boundary?.anchorId) throw new Error('invalid prompt boundary');
+  if (!boundary?.sessionId || (boundary.anchorId !== null && !boundary.anchorId)) throw new Error('invalid prompt boundary');
   const entries = await readJsonlEntries(filePath);
   const headers = entries.filter((entry) => entry?.type === 'session' && typeof entry.id === 'string');
   if (headers.length !== 1 || headers[0].id !== boundary.sessionId) throw new Error('Pi session header changed or is invalid');
+  if (boundary.anchorId === null) return extractPostBoundaryResult(entries.slice(entries.indexOf(headers[0]) + 1));
   const anchors = entries.reduce((found, entry, index) => entry?.id === boundary.anchorId ? [...found, index] : found, []);
   if (anchors.length !== 1) throw new Error('Pi prompt boundary anchor is missing or ambiguous');
   return extractPostBoundaryResult(entries.slice(anchors[0] + 1));

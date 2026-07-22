@@ -14,13 +14,14 @@ async function role(cwd) {
   return { name: roleNameFromFilename("executor.md"), role: parseRoleFile(await readFile(filePath, "utf8"), filePath) };
 }
 
-async function promptAndCollect(client, agentName, filePath, nonce) {
-  const boundary = await captureSessionBoundary(filePath);
+async function promptAndCollect(client, agentName, session, nonce) {
+  const boundary = await captureSessionBoundary(session);
   const acknowledgement = await promptAgent(client, { target: agentName, text: `Reply with exactly: ${nonce}`, wait: true, timeoutMs: 30000 });
   if (!['working', 'idle', 'blocked', 'done', 'unknown'].includes(acknowledgement.status)) throw new Error(`invalid prompt acknowledgement: ${acknowledgement.status}`);
   const waited = await waitForAgent(client, { target: agentName, until: ["idle", "done", "blocked"], timeoutMs: 120000 });
   if (waited.timedOut) throw new Error(`worker timed out after acknowledgement for ${nonce}`);
   if (waited.status === 'blocked') throw new Error(`worker blocked after acknowledgement for ${nonce}; pane remains open`);
+  const filePath = await waitForPiSessionReference(session, 10000);
   const result = await waitForFinalizedSessionResult(filePath, 10000, undefined, boundary);
   if (result.stopReason !== "stop" || result.text !== nonce) throw new Error(`wrong result for ${nonce}: ${JSON.stringify(result.text)}`);
   return acknowledgement.status;
@@ -37,10 +38,10 @@ async function main() {
   let identity;
   try { await waitForInteractiveReady(client, started.agent_name, 60000); identity = await waitForSessionIdentity(client, started.agent_name, 10000); } finally { await removeRolePromptFile(started.promptFile); }
   try { await reportPaneMetadata(client, pane.pane_id, { role: selected.name, bridge: "herdr-agent", state: "smoke" }); } catch (error) { console.warn(`Metadata warning (non-fatal): ${error.message}`); }
-  const filePath = await waitForPiSessionReference({ kind: identity.sessionKind, value: identity.sessionValue }, 10000);
   const first = `SMOKE_ONE_${Date.now().toString(36)}`; const second = `SMOKE_TWO_${Date.now().toString(36)}`;
-  const firstAck = await promptAndCollect(client, started.agent_name, filePath, first);
-  const secondAck = await promptAndCollect(client, started.agent_name, filePath, second);
+  const session = { kind: identity.sessionKind, value: identity.sessionValue };
+  const firstAck = await promptAndCollect(client, started.agent_name, session, first);
+  const secondAck = await promptAndCollect(client, started.agent_name, session, second);
   console.log(`SUCCESS pane=${pane.pane_id} agent=${started.agent_name} session=${identity.sessionKind}:${identity.sessionValue} acknowledgements=${firstAck},${secondAck} results=${first},${second}`);
   console.log(`Pane ${pane.pane_id} remains OPEN for inspection.`);
 }
