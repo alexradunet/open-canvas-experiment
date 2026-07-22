@@ -339,18 +339,24 @@ This is a single-context repository: use the root `CONTEXT.md` glossary and the 
 
 ## 15. Self-hosted deployment (NetBird)
 
-The development machine runs two Balaur instances as systemd services, accessible over NetBird:
+The development machine runs one dedicated OpenCode server and two Balaur instances as systemd services, accessible over NetBird:
 
 | Service | Port | Purpose |
 |---------|------|---------|
+| `opencode` | 4096 | Always-on OpenCode web server rooted in this repository |
 | `balaur-main` | 8080 | Main driver / production-like |
 | `balaur-dev` | 8081 | Development instance |
 
-Both services are defined in `nixos_dev_env/configuration.nix` and bind to `0.0.0.0`. Firewall rules expose ports 8080 and 8081 on the `netbird0` interface only.
+All services are defined in `nixos_dev_env/configuration.nix` and bind to `0.0.0.0`. Firewall rules expose ports 4096, 8080, and 8081 on the `netbird0` interface only. The OpenCode service starts in `/home/balaur/projects/balaur`, loads the repository `opencode.jsonc`, and reads its Qwen credential from the private file configured there. It runs as user `balaur` without a systemd filesystem sandbox, auto-approves permissions that are not explicitly denied, and can elevate explicitly through passwordless `sudo`; HTTP Basic authentication with a password of at least 16 characters is therefore mandatory.
 
 Manage services:
 
 ```bash
+./scripts/opencode-web password
+./scripts/opencode-web apply
+./scripts/opencode-web restart
+./scripts/opencode-web status
+./scripts/opencode-web logs
 sudo systemctl status balaur-main balaur-dev
 sudo systemctl restart balaur-main balaur-dev
 journalctl -u balaur-main -f
@@ -361,6 +367,10 @@ After changing `configuration.nix`, rebuild with:
 ```bash
 sudo nixos-rebuild switch --flake ./nixos_dev_env
 ```
+
+When working through an OpenCode terminal, use `./scripts/opencode-web apply`; it launches the rebuild as a transient system unit outside OpenCode's read-only service sandbox. Run `nixos-rebuild` directly only from a normal host terminal.
+
+Rebuilding or restarting `opencode` disconnects web and Desktop clients briefly; they can reconnect to the same port and persisted sessions afterward. Do not start a second `opencode web` process on port 4096.
 
 Each port is a separate browser origin, so IndexedDB vaults are isolated between instances.
 

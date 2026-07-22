@@ -116,13 +116,14 @@
     }
   },
   "permission": {
+    "*": "allow",
     "external_directory": {
-      "*": "ask",
+      "*": "allow",
       "/tmp/balaur-workers/**": "allow",
       "~/.config/opencode/qwen-token-plan.key": "deny"
     },
     "bash": {
-      "*": "ask",
+      "*": "allow",
       "git status*": "allow",
       "git diff*": "allow",
       "git log*": "allow",

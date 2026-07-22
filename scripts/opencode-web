@@ -1,0 +1,114 @@
+#!/bin/sh
+
+set -eu
+
+repo_root="$(dirname -- "$(dirname -- "$(realpath -- "$0")")")"
+expected_root="/home/balaur/projects/balaur"
+action="${1:-restart}"
+sudo_command="/run/wrappers/bin/sudo"
+systemctl_command="/run/current-system/sw/bin/systemctl"
+systemd_run_command="/run/current-system/sw/bin/systemd-run"
+journalctl_command="/run/current-system/sw/bin/journalctl"
+
+case "$action" in
+  apply)
+    if ! "$sudo_command" /bin/sh -c "grep -Eq '^OPENCODE_SERVER_PASSWORD=.{16,}$' /etc/opencode/env"; then
+      printf 'Configure server authentication first: %s password\n' "$0" >&2
+      exit 1
+    fi
+
+    unit="balaur-nixos-rebuild-$$"
+    "$sudo_command" "$systemd_run_command" \
+      --unit="$unit" \
+      --collect \
+      --no-block \
+      --property=Type=oneshot \
+      --property="WorkingDirectory=$repo_root" \
+      --setenv=HOME=/root \
+      --setenv=PATH=/run/current-system/sw/bin:/run/wrappers/bin \
+      /run/current-system/sw/bin/nixos-rebuild switch --flake "path:$repo_root/nixos_dev_env"
+    printf 'NixOS rebuild started outside the OpenCode sandbox.\n'
+    printf 'Follow it with: journalctl -fu %s\n' "$unit"
+    printf 'Web and Desktop clients will disconnect briefly when OpenCode restarts.\n'
+    ;;
+  password)
+    if [ ! -t 0 ]; then
+      printf 'Password setup requires an interactive terminal.\n' >&2
+      exit 1
+    fi
+
+    stty_state="$(stty -g)"
+    trap 'stty "$stty_state"' EXIT INT TERM
+    printf 'New OpenCode server password: ' >&2
+    stty -echo
+    IFS= read -r password
+    stty "$stty_state"
+    printf '\n' >&2
+    printf 'Confirm password: ' >&2
+    stty -echo
+    IFS= read -r confirmation
+    stty "$stty_state"
+    printf '\n' >&2
+    trap - EXIT INT TERM
+
+    if [ "$password" != "$confirmation" ]; then
+      printf 'Passwords do not match.\n' >&2
+      exit 1
+    fi
+    if [ "${#password}" -lt 16 ]; then
+      printf 'Password must contain at least 16 characters.\n' >&2
+      exit 1
+    fi
+    case "$password" in
+      *[!A-Za-z0-9._~-]*)
+        printf 'Use only letters, numbers, period, underscore, tilde, and hyphen.\n' >&2
+        exit 1
+        ;;
+    esac
+
+    unit="balaur-opencode-password-$$"
+    printf '%s\n' "$password" | "$sudo_command" "$systemd_run_command" \
+      --unit="$unit" \
+      --wait \
+      --pipe \
+      --collect \
+      --property=Type=oneshot \
+      /bin/sh -c '
+        set -eu
+        IFS= read -r password
+        file=/etc/opencode/env
+        temporary="$(/run/current-system/sw/bin/mktemp)"
+        trap '\''/run/current-system/sw/bin/rm -f "$temporary"'\'' EXIT
+        if [ -f "$file" ]; then
+          /run/current-system/sw/bin/grep -v "^OPENCODE_SERVER_PASSWORD=" "$file" > "$temporary" || true
+        fi
+        printf "OPENCODE_SERVER_PASSWORD=%s\n" "$password" >> "$temporary"
+        /run/current-system/sw/bin/install -m 600 "$temporary" "$file"
+      '
+    unset password confirmation
+    printf 'Server password configured in /etc/opencode/env.\n'
+    ;;
+  start | restart)
+    active_root="$("$systemctl_command" show opencode --property=WorkingDirectory --value)"
+    if [ "$active_root" != "$expected_root" ]; then
+      printf 'The installed OpenCode service still uses %s.\n' "${active_root:-an unknown directory}" >&2
+      printf 'Apply the Balaur NixOS configuration first:\n' >&2
+      printf '  sudo nixos-rebuild switch --flake %s/nixos_dev_env\n' "$repo_root" >&2
+      exit 1
+    fi
+
+    "$sudo_command" "$systemctl_command" "$action" opencode
+    "$systemctl_command" is-active --quiet opencode
+    printf 'OpenCode is active for Balaur on port 4096.\n'
+    ;;
+  status)
+    exec "$systemctl_command" status opencode --no-pager
+    ;;
+  logs)
+    exec "$journalctl_command" -u opencode -f
+    ;;
+  *)
+    printf 'Usage: %s [apply|password|start|restart|status|logs]\n' "$0" >&2
+    exit 2
+    ;;
+esac

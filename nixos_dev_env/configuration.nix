@@ -36,14 +36,12 @@
   # The setup key is needed only for initial enrollment, not normal startup.
   systemd.services.netbird-login.unitConfig.ConditionPathExists = "/etc/netbird/setup-key";
 
-  environment.etc."opencode/opencode.json".source = ./opencode.json;
-
   systemd.services.opencode = {
     description = "OpenCode web interface";
     after = [ "network-online.target" ];
     wants = [ "network-online.target" ];
     wantedBy = [ "multi-user.target" ];
-    unitConfig.ConditionPathExists = "/etc/opencode/env";
+    unitConfig.ConditionPathExists = "/home/balaur/projects/balaur/opencode.jsonc";
     path = with pkgs; [
       git
       gh
@@ -52,34 +50,36 @@
       nixd
       nixfmt
       ripgrep
+      (writeShellScriptBin "sudo" ''
+        exec /run/wrappers/bin/sudo "$@"
+      '')
     ];
 
     environment = {
       HOME = "/home/balaur";
-      OPENCODE_CONFIG = "/etc/opencode/opencode.json";
+      OPENCODE_CONFIG = "/home/balaur/projects/balaur/opencode.jsonc";
       OPENCODE_ENABLE_EXA = "1";
     };
 
     serviceConfig = {
       User = "balaur";
       Group = "users";
-      WorkingDirectory = "/home/balaur/projects";
+      WorkingDirectory = "/home/balaur/projects/balaur";
+      ExecStartPre = "${pkgs.writeShellScript "opencode-require-password" ''
+        if [ "''${#OPENCODE_SERVER_PASSWORD}" -lt 16 ]; then
+          echo "OpenCode requires OPENCODE_SERVER_PASSWORD with at least 16 characters in /etc/opencode/env" >&2
+          exit 1
+        fi
+      ''}";
       ExecStart = "${pkgs.opencode}/bin/opencode web --hostname 0.0.0.0 --port 4096";
-      EnvironmentFile = "-/etc/opencode/env";
-      Restart = "on-failure";
+      EnvironmentFile = "/etc/opencode/env";
+      Restart = "always";
       RestartSec = "5s";
       UMask = "0077";
 
+      # This trusted single-user service intentionally has normal host filesystem access.
+      # Root operations remain explicit through the NixOS sudo wrapper.
       NoNewPrivileges = false;
-      PrivateTmp = true;
-      ProtectHome = "tmpfs";
-      ProtectSystem = "strict";
-      # Share the same OpenCode state, credentials, and tool configuration as the TUI.
-      BindPaths = [ "/home/balaur" ];
-      ReadWritePaths = [
-        "/nix/var"
-        "/nix/store"
-      ];
     };
   };
 
