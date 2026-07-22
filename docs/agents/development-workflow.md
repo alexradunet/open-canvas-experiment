@@ -75,7 +75,7 @@ The project-local Pi extension at `.pi/extensions/herdr-agents/` starts and cont
 - The `herdr_agent` tool is **inactive inside worker sessions**. The extension returns early when `BALAUR_WORKER=1` is set, so delegated workers cannot spawn orchestration tools or recurse.
 - The tool **fails closed** outside a Herdr pane: it registers only when `HERDR_ENV=1`, `HERDR_SOCKET_PATH`, and `HERDR_PANE_ID` are all present.
 - It checks protocol 17 plus required server capabilities on `start` and rejects on mismatch.
-- Workers always receive an explicit non-orchestration tool allowlist. `herdr_agent`, `balaur_workflow`, `Agent`, `get_subagent_result`, `steer_subagent`, and `ext:pi-subagents/Agent` are excluded even for a role using `tools: "*"`.
+- Explicit role tool lists are allowlists with `herdr_agent`, `balaur_workflow`, `Agent`, `get_subagent_result`, `steer_subagent`, and `ext:pi-subagents/Agent` removed. A role using `tools: "*"` retains Pi wildcard semantics and receives those same IDs through Pi `--exclude-tools`.
 
 ### Actions
 
@@ -92,15 +92,15 @@ The project-local Pi extension at `.pi/extensions/herdr-agents/` starts and cont
 
 ### Role registry
 
-`.pi/agents/*.md` is the canonical role registry. The bridge supports the currently used frontmatter fields: `description`, `model`, `thinking`, `tools`, `skills`, and `prompt_mode`, including extension tool IDs such as `ext:pi-web-access/web_search`. It applies those settings through Pi 0.81.1 argv flags: model, thinking, filtered tool allowlist, and explicit `--skill` paths from either `.pi/skills/` or `.agents/skills/`. Because Herdr protocol-17 rejects control characters in argv values, the role body is written to a mode-0600 temporary prompt file for Pi to read during startup, then removed after the worker is interactive-ready. A requested malformed role returns its path-specific parse error; it is never silently hidden.
+`.pi/agents/*.md` is the canonical role registry. The bridge supports the currently used frontmatter fields: `description`, `model`, `thinking`, `tools`, `skills`, and `prompt_mode`, including extension tool IDs such as `ext:pi-web-access/web_search`. It applies those settings through Pi 0.81.1 argv flags: model, thinking, explicit allowlists or wildcard `--exclude-tools`, and explicit `--skill` paths from either `.pi/skills/` or `.agents/skills/`. Pi CHANGELOG #287 confirms `--system-prompt` accepts a file path, so because Herdr protocol-17 rejects control characters in argv values the role body is written to a mode-0600 temporary prompt file, preserving `replace` or `append` semantics, then removed after interactive-ready.
 
 ### Session result collection
 
-`collect` parses Pi v3 persisted `type: "message"` entries and returns only the last finalized assistant message. Tool results are associated by `toolCallId`, never tool name. Handles retain Herdr's exact session `kind` (`path` or `id`) and `value`; session IDs are resolved only beneath Pi's session root. It briefly retries when Herdr reports a path before Pi creates or flushes that file; it never signals or kills the worker.
+`collect` parses Pi v3 persisted `type: "message"` entries and returns only the last terminal assistant message. A `stopReason: "toolUse"` assistant message is intermediate and remains incomplete until a later terminal message; tool results are retained and associated by `toolCallId`, never tool name. Handles retain Herdr's exact session `kind` (`path` or `id`) and `value`; session IDs are resolved only beneath Pi's session root. It briefly retries when Herdr reports a path before Pi creates or flushes that file; it never signals or kills the worker.
 
 ### Handle persistence and reconciliation
 
-Worker handles are persisted in tool result `details` for session branching and reload/resume. On `session_start`, the bridge reconstructs handles from the session branch and reconciles exact pane ID, agent name, and session kind/value. Missing panes are marked `missing`; same-pane or session replacements are marked `replaced`. Before `prompt`, `wait`, `read`, `collect`, or `close`, the bridge verifies the full identity; close verifies it again after human confirmation. The bridge does not silently rebind.
+Worker handles are persisted as full-store snapshots in tool result `details`. On `session_start`, the bridge restores only the latest snapshot in current-branch order, then reconciles exact pane ID, agent name, and session kind/value. Missing panes are marked `missing`; same-pane or session replacements are marked `replaced`. Before `prompt`, `wait`, `read`, `collect`, or `close`, the bridge verifies the full identity; it also validates the identity returned by `wait` and `prompt`, and close verifies again after human confirmation. Protocol 17 cannot make preflight plus prompt one atomic operation, so a replacement immediately after a successful prompt response is reported by the next pinned action rather than silently rebound.
 
 ### Output bounding
 
@@ -114,7 +114,7 @@ The pure modules and a fake-Herdr socket server have dependency-free Node tests:
 node --test ".pi/extensions/herdr-agents/test/*.test.mjs"
 ```
 
-This covers role parsing, the Herdr client, session collection, handle persistence, and fake-server integration for success, malformed roles, unavailable Herdr, protocol mismatch, timeout, replaced occupant, and malformed session JSONL.
+This covers role parsing, session collection, handle persistence, and a registered-extension fake-Herdr harness: success across every handle action, unavailable Herdr, numeric protocol mismatch, event-driven timeout without kill, malformed Pi JSONL recovery, metadata shape, close denial/race, and latest-snapshot reload/replacement reconciliation.
 
 ### Live smoke test
 

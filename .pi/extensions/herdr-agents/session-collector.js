@@ -71,9 +71,16 @@ export async function waitForFinalizedSessionResult(filePath, timeoutMs = 10000,
 
 function sleep(ms, signal) {
   return new Promise((resolvePromise, reject) => {
-    const timer = setTimeout(resolvePromise, ms);
-    if (signal?.aborted) { clearTimeout(timer); reject(new Error('collection aborted')); }
-    signal?.addEventListener('abort', () => { clearTimeout(timer); reject(new Error('collection aborted')); }, { once: true });
+    if (signal?.aborted) return reject(new Error('collection aborted'));
+    let timer;
+    const onAbort = () => finish(new Error('collection aborted'));
+    const finish = (error) => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+      if (error) reject(error); else resolvePromise();
+    };
+    timer = setTimeout(() => finish(), ms);
+    signal?.addEventListener('abort', onAbort, { once: true });
   });
 }
 
@@ -106,7 +113,7 @@ export async function readJsonlEntries(filePath) {
 export function extractFinalizedResult(entries) {
   if (!Array.isArray(entries)) return incomplete([]);
   const calls = new Map();
-  let finalAssistant;
+  let terminalAssistant;
   let turns = 0;
   for (const entry of entries) {
     if (entry?.type !== 'message' || !entry.message || typeof entry.message !== 'object') continue;
@@ -116,7 +123,9 @@ export function extractFinalizedResult(entries) {
       for (const part of Array.isArray(message.content) ? message.content : []) {
         if (part?.type === 'toolCall' && typeof part.id === 'string') calls.set(part.id, { id: part.id, name: String(part.name || 'unknown'), arguments: part.arguments || {} });
       }
-      finalAssistant = message;
+      // Pi persists an assistant toolUse turn before its tool result(s) and
+      // later terminal assistant turn. toolUse is not a finalized outcome.
+      if (message.stopReason !== 'toolUse') terminalAssistant = message;
     }
     if (message.role === 'toolResult' && typeof message.toolCallId === 'string') {
       const call = calls.get(message.toolCallId);
@@ -124,18 +133,18 @@ export function extractFinalizedResult(entries) {
     }
   }
   const toolCalls = [...calls.values()];
-  if (!finalAssistant) return incomplete(toolCalls);
+  if (!terminalAssistant) return incomplete(toolCalls, turns);
   return {
-    text: (Array.isArray(finalAssistant.content) ? finalAssistant.content : []).filter((part) => part?.type === 'text' && typeof part.text === 'string').map((part) => part.text).join('\n'),
-    stopReason: finalAssistant.stopReason,
-    model: finalAssistant.model,
-    usage: finalAssistant.usage,
+    text: (Array.isArray(terminalAssistant.content) ? terminalAssistant.content : []).filter((part) => part?.type === 'text' && typeof part.text === 'string').map((part) => part.text).join('\n'),
+    stopReason: terminalAssistant.stopReason,
+    model: terminalAssistant.model,
+    usage: terminalAssistant.usage,
     toolCalls,
     turns,
   };
 }
 
-function incomplete(toolCalls) { return { text: '', stopReason: 'incomplete', toolCalls, turns: 0 }; }
+function incomplete(toolCalls, turns = 0) { return { text: '', stopReason: 'incomplete', toolCalls, turns }; }
 function summarizeToolResult(message) {
   const text = (Array.isArray(message.content) ? message.content : []).filter((part) => part?.type === 'text' && typeof part.text === 'string').map((part) => part.text).join('\n');
   return { isError: !!message.isError, text: text.length > 500 ? `${text.slice(0, 500)}...` : text };

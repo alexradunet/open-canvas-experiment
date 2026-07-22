@@ -12,10 +12,10 @@ export const ORCHESTRATION_TOOLS = Object.freeze([
   'ext:pi-subagents/Agent',
 ]);
 const EXCLUDED_TOOLS = new Set(ORCHESTRATION_TOOLS);
-// Wildcard roles are intentionally reduced to Pi built-ins. This keeps the
-// installed pi-subagents package available to the lead while preventing a
-// worker from acquiring orchestration tools through the wildcard.
-export const SAFE_WILDCARD_TOOLS = Object.freeze(['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls']);
+// A wildcard must retain Pi's normal wildcard semantics. Pi's --exclude-tools
+// supports built-in, extension, and custom IDs, so deny orchestration there
+// rather than silently shrinking a role's requested tool surface.
+export const SAFE_WILDCARD_TOOLS = Object.freeze([]);
 const UNSAFE_CHARS = /[\x00`$\\;|&<>(){}!\n\r]/;
 
 export function parseRoleFile(content, filePath) {
@@ -90,7 +90,7 @@ function assertSafeSkillName(value, filePath) {
 }
 
 export function filteredRoleTools(role) {
-  if (role.tools?.[0] === TOOL_WILDCARD) return [...SAFE_WILDCARD_TOOLS];
+  if (role.tools?.[0] === TOOL_WILDCARD) return [TOOL_WILDCARD];
   return (role.tools || []).filter((tool) => !EXCLUDED_TOOLS.has(tool));
 }
 
@@ -99,7 +99,11 @@ export function roleToPiArgs(role) {
   if (role.model) args.push('--model', role.model);
   if (role.thinking) args.push('--thinking', role.thinking);
   const tools = filteredRoleTools(role);
-  if (tools.length) args.push('--tools', tools.join(','));
+  if (tools[0] === TOOL_WILDCARD) args.push('--exclude-tools', ORCHESTRATION_TOOLS.join(','));
+  else if (tools.length) args.push('--tools', tools.join(','));
+  // Pi changelog #287 documents that --system-prompt accepts a file path;
+  // pane-manager replaces this value with a mode-0600 prompt file for
+  // protocol-17-safe argv transport while retaining replace/append semantics.
   if (role.prompt) args.push(role.prompt_mode === 'append' ? '--append-system-prompt' : '--system-prompt', role.prompt);
   return args;
 }

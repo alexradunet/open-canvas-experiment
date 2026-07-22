@@ -8,7 +8,7 @@ import { truncateHead, formatSize, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, type Ex
 import { Text } from "@earendil-works/pi-tui";
 import { HerdrClient, EXPECTED_PROTOCOL } from "./herdr-client.js";
 import { parseRoleFile, roleNameFromFilename, type RoleConfig } from "./role-parser.js";
-import { assertPinnedAgent, buildWorkerEnv, closePane, createPane, listAgents, promptAgent, readAgent, removeRolePromptFile, reportPaneMetadata, requestCloseConfirmation, startAgent, waitForAgent, waitForInteractiveReady, waitForSessionIdentity } from "./pane-manager.js";
+import { assertAgentIdentity, assertPinnedAgent, buildWorkerEnv, closePane, createPane, listAgents, makeAgentLabel, promptAgent, readAgent, removeRolePromptFile, reportPaneMetadata, requestCloseConfirmation, startAgent, waitForAgent, waitForInteractiveReady, waitForSessionIdentity } from "./pane-manager.js";
 import { waitForFinalizedSessionResult, waitForPiSessionReference } from "./session-collector.js";
 import { createHandleStore, createHandle, deserializeStore, listHandles, reconcileHandles, serializeStore, type WorkerHandle } from "./handle-store.js";
 
@@ -34,11 +34,12 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("session_start", async (_event, ctx) => {
     handleMap.clear();
-    for (const entry of ctx?.sessionManager?.getBranch?.() || []) {
-      if (entry?.type === "message" && entry.message?.role === "toolResult" && entry.message.toolName === "herdr_agent" && entry.message.details?.store) {
-        for (const handle of listHandles(deserializeStore(entry.message.details.store))) handleMap.set(handle.handleId, handle);
-      }
-    }
+    // getBranch() is ordered oldest → current leaf. A store is a full snapshot,
+    // so restore only the latest one; unioning history resurrects closed handles.
+    const snapshots = (ctx?.sessionManager?.getBranch?.() || []).filter((entry: any) =>
+      entry?.type === "message" && entry.message?.role === "toolResult" && entry.message.toolName === "herdr_agent" && typeof entry.message.details?.store === "string");
+    const latest = snapshots.at(-1);
+    if (latest) for (const handle of listHandles(deserializeStore(latest.message.details.store))) handleMap.set(handle.handleId, handle);
     if (!handleMap.size) return;
     try {
       const store = createStore();
@@ -145,7 +146,7 @@ export default function (pi: ExtensionAPI) {
     const ping = await client.ping(signal);
     if (ping.protocol !== EXPECTED_PROTOCOL || !ping.capabilities.live_handoff) throw new Error(`Herdr protocol/capability mismatch (protocol ${ping.protocol})`);
     const pane = await createPane(client, { currentPaneId: herdrEnv.paneId, direction: "right", ratio: 0.5, cwd: ctx.cwd, env: buildWorkerEnv() }, signal);
-    const started = await startAgent(client, { paneId: pane.pane_id, agentName: `${params.role}-${Date.now().toString(36)}`, role: entry.role, cwd: ctx.cwd }, signal);
+    const started = await startAgent(client, { paneId: pane.pane_id, agentName: makeAgentLabel(params.role), role: entry.role, cwd: ctx.cwd }, signal);
     let identity;
     try {
       await waitForInteractiveReady(client, started.agent_name, 60000, signal);
@@ -166,6 +167,7 @@ export default function (pi: ExtensionAPI) {
     const handle = requireHandle(params.handle); await pinned(handle, signal);
     const result = await waitForAgent(makeClient(), { target: handle.agentName, until: ["idle", "done"], timeoutMs: params.timeout_ms || 120000 }, signal);
     if (result.timedOut) return { content: [{ type: "text", text: bounded(`Worker ${handle.handleId} timed out; it was not killed.`) }], details: details({ handle: handle.handleId, timedOut: true }) };
+    assertAgentIdentity(handle, result.agent);
     handle.status = result.status === "done" ? "done" : "idle";
     return { content: [{ type: "text", text: bounded(`Worker ${handle.handleId} reached ${result.status}.`) }], details: details({ handle: handle.handleId }) };
   }
@@ -177,7 +179,10 @@ export default function (pi: ExtensionAPI) {
   async function prompt(params: any, signal?: AbortSignal) {
     if (!params.prompt) throw new Error("prompt is required for prompt");
     const handle = requireHandle(params.handle); await pinned(handle, signal);
-    await promptAgent(makeClient(), { target: handle.agentName, text: params.prompt }, signal); handle.status = "working";
+    const prompted = await promptAgent(makeClient(), { target: handle.agentName, text: params.prompt }, signal);
+    // agent.prompt returns the target's current identity. Validate it too;
+    // protocol 17 has no transaction spanning the preflight and prompt call.
+    assertAgentIdentity(handle, prompted.agent); handle.status = "working";
     return { content: [{ type: "text", text: `Prompted ${handle.handleId}.` }], details: details({ handle: handle.handleId }) };
   }
   async function collect(params: any, signal?: AbortSignal) {

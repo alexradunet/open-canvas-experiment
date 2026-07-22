@@ -34,6 +34,17 @@ describe('Pi v3 session collection', () => {
     assert.equal(result.stopReason, 'incomplete');
   });
 
+  it('treats a real Pi-v3 toolUse assistant turn as incomplete while retaining tool evidence', () => {
+    const entries = [
+      { type: 'message', message: { role: 'assistant', content: [{ type: 'toolCall', id: 'call_1', name: 'bash', arguments: { command: 'true' } }], stopReason: 'toolUse', usage } },
+      { type: 'message', message: { role: 'toolResult', toolCallId: 'call_1', toolName: 'bash', content: [{ type: 'text', text: 'ok' }], isError: false } },
+    ];
+    const result = extractFinalizedResult(entries);
+    assert.equal(result.stopReason, 'incomplete');
+    assert.equal(result.turns, 1);
+    assert.deepEqual(result.toolCalls, [{ id: 'call_1', name: 'bash', arguments: { command: 'true' }, result: { isError: false, text: 'ok' } }]);
+  });
+
   it('resolves a session id only beneath the configured Pi session root', async () => {
     const root = await mkdtemp(join(tmpdir(), 'pi-sessions-'));
     const id = '22222222-2222-2222-2222-222222222222';
@@ -69,5 +80,14 @@ describe('Pi v3 session collection', () => {
     const controller = new AbortController();
     controller.abort();
     await assert.rejects(waitForFinalizedSessionResult('/missing/session.jsonl', 1000, controller.signal), /collection aborted/);
+  });
+
+  it('removes retry AbortSignal listeners after a normal sleep completion', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'pi-cleanup-')); const path = join(root, 'session.jsonl');
+    let added = 0; let removed = 0; const listeners = new Set();
+    const signal = { aborted: false, addEventListener: (_name, listener) => { added++; listeners.add(listener); }, removeEventListener: (_name, listener) => { removed++; listeners.delete(listener); } };
+    setTimeout(() => void writeFile(path, JSON.stringify({ type: 'message', message: { role: 'assistant', content: [{ type: 'text', text: 'done' }], stopReason: 'stop', usage } }) + '\n'), 25);
+    try { assert.equal((await waitForFinalizedSessionResult(path, 2000, signal)).text, 'done'); assert.equal(added, removed); assert.equal(listeners.size, 0); }
+    finally { await rm(root, { recursive: true, force: true }); }
   });
 });

@@ -24,11 +24,17 @@ describe('role compatibility', () => {
     assert.deepEqual(filteredRoleTools(role), ['read', 'ext:pi-web-access/web_search']);
   });
 
-  it('constrains wildcard roles to safe non-orchestration tools', () => {
+  it('preserves wildcard semantics with Pi exclude-tools orchestration denylist', () => {
     const role = parseRoleFile('---\ndescription: wildcard\ntools: "*"\n---\nPrompt', '/roles/wild.md');
-    const tools = filteredRoleTools(role);
-    assert.ok(tools.includes('bash'));
-    for (const forbidden of ORCHESTRATION_TOOLS) assert.ok(!tools.includes(forbidden));
+    assert.deepEqual(filteredRoleTools(role), ['*']);
+    const args = roleToPiArgs(role);
+    assert.ok(!args.includes('--tools'));
+    assert.deepEqual(args.slice(args.indexOf('--exclude-tools') + 1, args.indexOf('--exclude-tools') + 2), [ORCHESTRATION_TOOLS.join(',')]);
+  });
+
+  it('uses an allowlist for explicit roles while removing orchestration entries', () => {
+    const role = parseRoleFile('---\ndescription: explicit\ntools: read, Agent, ext:pi-subagents/Agent, bash\n---\nPrompt', '/roles/explicit.md');
+    assert.deepEqual(roleToPiArgs(role).slice(0, 2), ['--tools', 'read,bash']);
   });
 
   it('retains a path-specific malformed-role error', () => {

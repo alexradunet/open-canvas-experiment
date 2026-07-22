@@ -50,6 +50,7 @@ export function createHandleStore() {
  * @param {string} opts.role
  * @param {string} [opts.workspaceId]
  * @param {string} [opts.worktreePath]
+ * @param {string} [opts.agentName]
  * @param {'id'|'path'} [opts.sessionKind]
  * @param {string} [opts.sessionValue]
  * @returns {WorkerHandle}
@@ -65,6 +66,7 @@ export function createHandle(opts) {
     role: opts.role,
     workspaceId: opts.workspaceId,
     worktreePath: opts.worktreePath,
+    agentName: opts.agentName,
     sessionKind: opts.sessionKind,
     sessionValue: opts.sessionValue,
     status: 'starting',

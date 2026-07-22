@@ -5,7 +5,7 @@ import os from 'node:os';
 import fs from 'node:fs';
 import { resolve } from 'node:path';
 import { HerdrClient, EXPECTED_PROTOCOL } from '../herdr-client.js';
-import { assertPinnedAgent, captureAgentIdentity, closePane, reportPaneMetadata, requestCloseConfirmation, resolveRoleSkillArgs, startAgent } from '../pane-manager.js';
+import { assertPinnedAgent, captureAgentIdentity, closePane, listAgents, makeAgentLabel, reportPaneMetadata, requestCloseConfirmation, resolveRoleSkillArgs, startAgent } from '../pane-manager.js';
 import { parseRoleFile } from '../role-parser.js';
 
 const session = { source: 'herdr:pi', agent: 'pi', kind: 'id', value: '33333333-3333-3333-3333-333333333333' };
@@ -49,6 +49,8 @@ describe('protocol-17 socket and lifecycle validation', () => {
         const args = server.requests.find((request) => request.method === 'agent.start').params.args;
         assert.ok(args.some((arg) => String(arg).includes('ext:pi-web-access/web_search')));
         assert.ok(args.includes(resolve(cwd, '.agents/skills/custom/SKILL.md')));
+        const promptFlag = args.findIndex((arg) => arg === '--system-prompt');
+        assert.ok(promptFlag >= 0 && args[promptFlag + 1].endsWith('/system-prompt.md'), 'Pi #287 path-backed --system-prompt is used');
         assert.ok(!args.some((arg) => String(arg).includes('\n')));
       } finally { await import('../pane-manager.js').then(({ removeRolePromptFile }) => removeRolePromptFile(started.promptFile)); }
     });
@@ -59,6 +61,21 @@ describe('protocol-17 socket and lifecycle validation', () => {
     fs.mkdirSync(resolve(cwd, '.agents/skills/agents'), { recursive: true }); fs.writeFileSync(resolve(cwd, '.agents/skills/agents/SKILL.md'), '# agents');
     const role = parseRoleFile('---\ndescription: skills\nskills: project, agents\n---\nPrompt', '/skills.md');
     assert.deepEqual(resolveRoleSkillArgs(role, cwd), ['--skill', resolve(cwd, '.pi/skills/project/SKILL.md'), '--skill', resolve(cwd, '.agents/skills/agents/SKILL.md')]);
+  });
+  it('accepts a real unnamed lead row in agent.list without rejecting workers', async () => {
+    await withServer({ 'agent.list': () => ({ type: 'agent_list', agents: [{ pane_id: 'w1:p1', agent_status: 'idle' }, agent()] }) }, async (client) => {
+      const rows = await listAgents(client);
+      assert.equal(rows.length, 2);
+      assert.equal(rows[0].name, undefined);
+    });
+  });
+  it('creates valid unique <=32-character labels for long role names', () => {
+    const role = 'a'.repeat(64);
+    const one = makeAgentLabel(role, 12345, 'first');
+    const two = makeAgentLabel(role, 12345, 'other');
+    assert.match(one, /^[a-z0-9][a-z0-9_-]*$/);
+    assert.ok(one.length <= 32);
+    assert.notEqual(one, two);
   });
   it('uses protocol-valid metadata source and token fields', async () => {
     await withServer({}, async (client, server) => {

@@ -1,5 +1,6 @@
 /** Pane creation and protocol-17 Pi agent lifecycle management. */
 import { existsSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve, join } from 'node:path';
@@ -12,8 +13,15 @@ const SOURCE_RE = /^[A-Za-z0-9_-]{1,32}$/;
 function sleep(ms, signal) {
   return new Promise((resolvePromise, reject) => {
     if (signal?.aborted) return reject(new Error('operation aborted'));
-    const timer = setTimeout(resolvePromise, ms);
-    signal?.addEventListener('abort', () => { clearTimeout(timer); reject(new Error('operation aborted')); }, { once: true });
+    let timer;
+    const onAbort = () => finish(new Error('operation aborted'));
+    const finish = (error) => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+      if (error) reject(error); else resolvePromise();
+    };
+    timer = setTimeout(() => finish(), ms);
+    signal?.addEventListener('abort', onAbort, { once: true });
   });
 }
 function resultOf(response, type, field) {
@@ -26,9 +34,9 @@ function requirePane(value, label = 'pane') {
   for (const key of ['pane_id', 'workspace_id', 'tab_id']) requireString(pane[key], `${label}.${key}`);
   return pane;
 }
-function requireAgent(value, label = 'agent') {
+function requireAgent(value, label = 'agent', requireName = true) {
   const agent = expectObject(value, label);
-  requireString(agent.name, `${label}.name`);
+  if (requireName) requireString(agent.name, `${label}.name`);
   requireString(agent.pane_id, `${label}.pane_id`);
   if (typeof agent.agent_status !== 'string') throw new Error(`${label}.agent_status is missing`);
   // Protocol-17 omits false booleans through serde skip_serializing_if.
@@ -139,12 +147,13 @@ export async function listAgents(client, signal) {
   const response = await client.request('agent.list', {}, undefined, signal);
   const result = expectObject(response.result, 'agent_list result');
   if (result.type !== 'agent_list' || !Array.isArray(result.agents)) throw new Error('Herdr agent.list response shape is invalid');
-  return result.agents.map((agent) => requireAgent(agent));
+  // Herdr's lead pane can be an unnamed agent-list row. It is valid inventory,
+  // but cannot match a persisted named worker identity.
+  return result.agents.map((agent) => requireAgent(agent, 'agent', false));
 }
 
-export async function assertPinnedAgent(client, handle, signal) {
+export function assertAgentIdentity(handle, agent) {
   if (!handle.agentName) throw new Error('worker has no agent name');
-  const agent = await getAgent(client, handle.agentName, signal);
   if (agent.name !== handle.agentName || agent.pane_id !== handle.paneId) {
     handle.status = 'replaced';
     throw new Error(`worker occupant was replaced for pane ${handle.paneId}`);
@@ -154,6 +163,18 @@ export async function assertPinnedAgent(client, handle, signal) {
     throw new Error(`worker session identity was replaced for pane ${handle.paneId}`);
   }
   return agent;
+}
+
+export async function assertPinnedAgent(client, handle, signal) {
+  if (!handle.agentName) throw new Error('worker has no agent name');
+  return assertAgentIdentity(handle, await getAgent(client, handle.agentName, signal));
+}
+
+export function makeAgentLabel(roleName, now = Date.now(), nonce = randomUUID().slice(0, 8)) {
+  const suffix = `-${Number(now).toString(36)}-${nonce}`;
+  // Roles are filename-validated, and the suffix is alphanumeric; trim only
+  // the role prefix so the final Herdr name is valid and no longer than 32.
+  return `${String(roleName).slice(0, Math.max(1, 32 - suffix.length))}${suffix}`.slice(0, 32);
 }
 
 export function captureAgentIdentity(agent) {
