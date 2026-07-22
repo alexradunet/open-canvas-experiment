@@ -15,7 +15,7 @@ honor its STOP conditions, and update your row when done.
 | Plan | Title | Priority | Effort | Depends on | Status |
 |------|-------|----------|--------|------------|--------|
 | 001  | Move "Add to canvas" out of the sidebar into an Add menu on the canvas action bar | P1 | M | — | DONE |
-| 002  | Make Herdr prompting, collection, and launch recovery race-safe | P1 | M | Stage 1 through `e3f23f6` | DONE |
+| 002  | Make Herdr prompting, collection, and launch recovery race-safe | P1 | M | Stage 1 through `e3f23f6` | BLOCKED — both final reviews require another lifecycle-hardening pass |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) | REJECTED (with one-line rationale)
 
@@ -40,9 +40,11 @@ Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) | REJE
   storage tests, full browser-check smoke incl. offline and 380px width,
   functional eval probes, and geometry probes in both directions.
 - **002** — executed 2026-07-22 in `/tmp/balaur-workers/2-herdr-agent-bridge`
-  from `e3f23f6`. Focused Herdr bridge suite (43 tests), syntax checks, and
-  `git diff --check` passed. The real visible-pane two-prompt race smoke remains
-  for the lead to run; it intentionally leaves all smoke panes open.
+  from `e3f23f6`; commits `a7e8f9d` and `cfad5f0`. The focused Herdr bridge
+  suite passes 46/46, syntax and diff checks pass, and the real visible-pane
+  two-prompt smoke returned distinct results in retained pane `w1:p8`. Both
+  final reviews still returned REVISE for concurrent mutation, failure-state,
+  unsupported isolation, snapshot-validation, and collector hardening gaps.
 
 ## Findings considered and rejected
 
