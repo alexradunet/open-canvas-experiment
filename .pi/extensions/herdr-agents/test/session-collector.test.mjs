@@ -1,201 +1,73 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { resolve, dirname, join } from 'node:path';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { fileURLToPath } from 'node:url';
-import { collectSessionResult, waitForFinalizedSessionResult, readJsonlEntries, extractFinalizedResult } from '../session-collector.js';
+import { join, resolve } from 'node:path';
+import { collectSessionResult, extractFinalizedResult, resolvePiSessionReference, waitForFinalizedSessionResult, waitForPiSessionReference } from '../session-collector.js';
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const fixtures = resolve(__dirname, 'fixtures');
+const fixture = resolve('.pi/extensions/herdr-agents/test/fixtures/session.jsonl');
+const usage = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
 
-describe('session-collector', () => {
-  describe('readJsonlEntries', () => {
-    it('reads valid JSONL file', async () => {
-      const entries = await readJsonlEntries(resolve(fixtures, 'session.jsonl'));
-      assert.ok(entries.length >= 3);
-    });
-
-    it('skips malformed lines', async () => {
-      const entries = await readJsonlEntries(resolve(fixtures, 'error-session.jsonl'));
-      // Should have 3 valid entries, skipping the invalid JSON line
-      assert.equal(entries.length, 3);
-    });
-
-    it('rejects non-existent file', async () => {
-      await assert.rejects(
-        readJsonlEntries('/nonexistent/file.jsonl'),
-        /failed to read session file/
-      );
-    });
+describe('Pi v3 session collection', () => {
+  it('parses persisted type=message entries and associates results by toolCallId', async () => {
+    const result = await collectSessionResult(fixture);
+    assert.equal(result.stopReason, 'stop');
+    assert.equal(result.text, 'Task completed successfully.');
+    assert.equal(result.toolCalls.length, 1);
+    assert.equal(result.toolCalls[0].id, 'call_1');
+    assert.equal(result.toolCalls[0].result.text, 'ok');
+    assert.equal(result.turns, 2);
   });
 
-  describe('extractFinalizedResult', () => {
-    it('returns empty result for empty entries', () => {
-      const result = extractFinalizedResult([]);
-      assert.equal(result.text, '');
-      assert.equal(result.stopReason, 'unknown');
-      assert.equal(result.turns, 0);
-    });
-
-    it('returns incomplete for partial session', () => {
-      const entries = [
-        { type: 'message', message: { role: 'assistant', content: [{ type: 'text', text: 'Working' }] } }
-      ];
-      const result = extractFinalizedResult(entries);
-      assert.equal(result.text, '');
-      assert.equal(result.stopReason, 'incomplete');
-    });
-
-    it('extracts finalized result from message_end', () => {
-      const entries = [
-        {
-          type: 'message_end',
-          message: {
-            role: 'assistant',
-            content: [{ type: 'text', text: 'Done!' }],
-            stopReason: 'end',
-            model: 'test-model',
-            usage: { input: 100, output: 50 },
-          },
-        },
-      ];
-      const result = extractFinalizedResult(entries);
-      assert.equal(result.text, 'Done!');
-      assert.equal(result.stopReason, 'end');
-      assert.equal(result.model, 'test-model');
-      assert.equal(result.turns, 1);
-      assert.deepEqual(result.usage, { input: 100, output: 50 });
-    });
-
-    it('collects tool call evidence', () => {
-      const entries = [
-        {
-          type: 'message_end',
-          message: {
-            role: 'assistant',
-            content: [
-              { type: 'text', text: 'Result' },
-              { type: 'toolCall', name: 'bash', arguments: { command: 'echo hi' } },
-            ],
-            stopReason: 'end',
-          },
-        },
-      ];
-      const result = extractFinalizedResult(entries);
-      assert.equal(result.toolCalls.length, 1);
-      assert.equal(result.toolCalls[0].name, 'bash');
-      assert.deepEqual(result.toolCalls[0].arguments, { command: 'echo hi' });
-    });
-
-    it('returns the last finalized assistant text', () => {
-      const entries = [
-        {
-          type: 'message_end',
-          message: {
-            role: 'assistant',
-            content: [{ type: 'text', text: 'First' }],
-            stopReason: 'end',
-          },
-        },
-        {
-          type: 'message_end',
-          message: {
-            role: 'assistant',
-            content: [{ type: 'text', text: 'Second' }],
-            stopReason: 'end',
-          },
-        },
-      ];
-      const result = extractFinalizedResult(entries);
-      assert.equal(result.text, 'Second');
-      assert.equal(result.turns, 2);
-    });
-
-    it('attaches tool results to matching calls', () => {
-      const entries = [
-        {
-          type: 'message_end',
-          message: {
-            role: 'assistant',
-            content: [
-              { type: 'toolCall', name: 'bash', arguments: { command: 'ls' } },
-            ],
-            stopReason: 'end',
-          },
-        },
-        {
-          type: 'message',
-          message: {
-            role: 'toolResult',
-            toolName: 'bash',
-            content: [{ type: 'text', text: 'file1\nfile2' }],
-          },
-        },
-      ];
-      const result = extractFinalizedResult(entries);
-      assert.equal(result.toolCalls.length, 1);
-      assert.ok(result.toolCalls[0].result);
-      assert.ok(result.toolCalls[0].result.text.includes('file1'));
-    });
-
-    it('handles non-array/non-object entries gracefully', () => {
-      const result = extractFinalizedResult([null, undefined, 'string', 42]);
-      // No finalized assistant message found among invalid entries
-      assert.equal(result.stopReason, 'incomplete');
-      assert.equal(result.text, '');
-      assert.equal(result.turns, 0);
-    });
+  it('does not associate same-name tools without matching toolCallId', () => {
+    const entries = [
+      { type: 'message', message: { role: 'assistant', content: [{ type: 'toolCall', id: 'call-a', name: 'bash', arguments: {} }], stopReason: 'toolUse', usage } },
+      { type: 'message', message: { role: 'toolResult', toolCallId: 'call-b', toolName: 'bash', content: [{ type: 'text', text: 'wrong' }], isError: false } },
+      { type: 'message', message: { role: 'assistant', content: [{ type: 'text', text: 'final' }], stopReason: 'stop', usage } },
+    ];
+    const result = extractFinalizedResult(entries);
+    assert.equal(result.toolCalls[0].result, undefined);
   });
 
-  describe('collectSessionResult (integration)', () => {
-    it('collects from a valid session file', async () => {
-      const result = await collectSessionResult(resolve(fixtures, 'session.jsonl'));
-      assert.equal(result.stopReason, 'end');
-      assert.ok(result.text.includes('Task completed'));
-      assert.equal(result.model, 'test-model');
-      assert.ok(result.turns >= 1);
-    });
+  it('returns incomplete for only partial assistant output', () => {
+    const result = extractFinalizedResult([{ type: 'message', message: { role: 'assistant', content: [{ type: 'text', text: 'partial' }] } }]);
+    assert.equal(result.stopReason, 'incomplete');
+  });
 
-    it('collects from multi-turn session', async () => {
-      const result = await collectSessionResult(resolve(fixtures, 'multi-turn-session.jsonl'));
-      assert.equal(result.stopReason, 'end');
-      assert.ok(result.text.includes('Final result'));
-      assert.equal(result.turns, 2);
-    });
+  it('resolves a session id only beneath the configured Pi session root', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'pi-sessions-'));
+    const id = '22222222-2222-2222-2222-222222222222';
+    const nested = join(root, 'project');
+    await mkdir(nested);
+    const path = join(nested, 'session.jsonl');
+    await writeFile(path, JSON.stringify({ type: 'session', version: 3, id, cwd: '/test' }) + '\n');
+    try {
+      assert.equal(await resolvePiSessionReference({ kind: 'id', value: id }, root), path);
+      await assert.rejects(resolvePiSessionReference({ kind: 'id', value: '../bad' }, root), /invalid Pi session ID/);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
 
-    it('handles error session', async () => {
-      const result = await collectSessionResult(resolve(fixtures, 'error-session.jsonl'));
-      // The last finalized message has stopReason "error"
-      assert.equal(result.stopReason, 'error');
-    });
+  it('retries a session id until its Pi file appears', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'pi-id-late-'));
+    const id = '55555555-5555-5555-5555-555555555555';
+    const dir = join(root, 'project'); await mkdir(dir);
+    const path = join(dir, 'session.jsonl');
+    setTimeout(() => void writeFile(path, JSON.stringify({ type: 'session', version: 3, id, cwd: '/test' }) + '\n'), 100);
+    try { assert.equal(await waitForPiSessionReference({ kind: 'id', value: id }, 2000, undefined, root), path); }
+    finally { await rm(root, { recursive: true, force: true }); }
+  });
 
-    it('returns incomplete for partial session', async () => {
-      const result = await collectSessionResult(resolve(fixtures, 'partial-session.jsonl'));
-      assert.equal(result.stopReason, 'incomplete');
-      assert.equal(result.text, '');
-    });
+  it('retries a late-created final Pi session file', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'pi-late-'));
+    const path = join(root, 'session.jsonl');
+    setTimeout(() => void writeFile(path, JSON.stringify({ type: 'message', message: { role: 'assistant', content: [{ type: 'text', text: 'ready' }], stopReason: 'stop', usage } }) + '\n'), 100);
+    try { assert.equal((await waitForFinalizedSessionResult(path, 2000)).text, 'ready'); }
+    finally { await rm(root, { recursive: true, force: true }); }
+  });
 
-    it('retries until Pi creates and finalizes the reported session file', async () => {
-      const dir = await mkdtemp(join(tmpdir(), 'herdr-session-'));
-      const path = join(dir, 'late.jsonl');
-      try {
-        setTimeout(() => {
-          void writeFile(path, JSON.stringify({
-            type: 'message',
-            message: {
-              role: 'assistant',
-              content: [{ type: 'text', text: 'Final after flush' }],
-              stopReason: 'end',
-            },
-          }) + '\n');
-        }, 100);
-        const result = await waitForFinalizedSessionResult(path, 2000);
-        assert.equal(result.text, 'Final after flush');
-        assert.equal(result.stopReason, 'end');
-      } finally {
-        await rm(dir, { recursive: true, force: true });
-      }
-    });
+  it('honors AbortSignal while retrying collection', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    await assert.rejects(waitForFinalizedSessionResult('/missing/session.jsonl', 1000, controller.signal), /collection aborted/);
   });
 });

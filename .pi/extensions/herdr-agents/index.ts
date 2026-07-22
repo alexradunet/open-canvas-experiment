@@ -1,609 +1,197 @@
-/**
- * Balaur Herdr agent bridge — project-local Pi extension.
- *
- * Starts and controls interactive Pi workers in visible, persistent Herdr
- * panes. This stage proves the generic bridge while intentionally retaining
- * `npm:@tintinweb/pi-subagents` so existing workflows remain usable until
- * the final cutover.
- *
- * @module herdr-agents
- */
-
+/** Balaur-owned visible Herdr worker bridge. */
 import { readFile, readdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { resolve, join } from "node:path";
+import { join, resolve } from "node:path";
 import { Type } from "typebox";
 import { StringEnum } from "@earendil-works/pi-ai";
-import {
-  truncateHead,
-  formatSize,
-  DEFAULT_MAX_BYTES,
-  DEFAULT_MAX_LINES,
-  type ExtensionAPI,
-} from "@earendil-works/pi-coding-agent";
+import { truncateHead, formatSize, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
+import { HerdrClient, EXPECTED_PROTOCOL } from "./herdr-client.js";
+import { parseRoleFile, roleNameFromFilename, type RoleConfig } from "./role-parser.js";
+import { assertPinnedAgent, buildWorkerEnv, closePane, createPane, listAgents, promptAgent, readAgent, removeRolePromptFile, reportPaneMetadata, requestCloseConfirmation, startAgent, waitForAgent, waitForInteractiveReady, waitForSessionIdentity } from "./pane-manager.js";
+import { waitForFinalizedSessionResult, waitForPiSessionReference } from "./session-collector.js";
+import { createHandleStore, createHandle, deserializeStore, listHandles, reconcileHandles, serializeStore, type WorkerHandle } from "./handle-store.js";
 
-import {
-  HerdrClient,
-  EXPECTED_PROTOCOL,
-} from "./herdr-client.js";
-import {
-  parseRoleFile,
-  roleNameFromFilename,
-  type RoleConfig,
-} from "./role-parser.js";
-import {
-  createPane,
-  startAgent,
-  removeRolePromptFile,
-  waitForInteractiveReady,
-  waitForAgent,
-  promptAgent,
-  readAgent,
-  listAgents,
-  assertPinnedAgent,
-  closePane,
-  reportPaneMetadata,
-  buildWorkerEnv,
-} from "./pane-manager.js";
-import { waitForFinalizedSessionResult } from "./session-collector.js";
-import {
-  createHandleStore,
-  createHandle,
-  listHandles,
-  serializeStore,
-  deserializeStore,
-  type WorkerHandle,
-} from "./handle-store.js";
-
-const ActionSchema = StringEnum([
-  "start",
-  "list",
-  "status",
-  "wait",
-  "read",
-  "prompt",
-  "collect",
-  "close",
-] as const);
-
+const ActionSchema = StringEnum(["start", "list", "status", "wait", "read", "prompt", "collect", "close"] as const);
+const BOUNDED_STRING = (description: string, maxLength = 16000) => Type.String({ description, minLength: 1, maxLength });
 const HerdrAgentParams = Type.Object({
   action: ActionSchema,
-  role: Type.Optional(Type.String({ description: "Role name from .pi/agents/*.md (for start)" })),
-  handle: Type.Optional(Type.String({ description: "Worker handle ID (for status/wait/read/prompt/collect/close)" })),
-  prompt: Type.Optional(Type.String({ description: "Prompt text (for prompt action)" })),
-  timeout_ms: Type.Optional(
-    Type.Integer({ minimum: 3000, maximum: 300000, description: "Timeout in milliseconds (for wait/prompt)" }),
-  ),
-  lines: Type.Optional(
-    Type.Integer({ minimum: 1, maximum: 5000, description: "Number of terminal lines (for read)" }),
-  ),
-});
+  role: Type.Optional(BOUNDED_STRING("Role name from .pi/agents/*.md", 64)),
+  handle: Type.Optional(BOUNDED_STRING("Worker handle ID", 64)),
+  prompt: Type.Optional(BOUNDED_STRING("Prompt text", 16000)),
+  timeout_ms: Type.Optional(Type.Integer({ minimum: 3000, maximum: 300000 })),
+  lines: Type.Optional(Type.Integer({ minimum: 1, maximum: 5000 })),
+}, { additionalProperties: false });
 
-/** @type {Map<string, WorkerHandle>} */
-const handleMap = new Map();
+const handleMap = new Map<string, WorkerHandle>();
+const MAX_ERROR_BYTES = 4000;
 
 export default function (pi: ExtensionAPI) {
-  // Do not activate inside worker sessions (BALAUR_WORKER=1).
-  // Workers must not be able to spawn orchestration tools.
-  if (process.env.BALAUR_WORKER === "1") {
-    return;
-  }
-
-  // Do not activate outside a Herdr pane — fail closed.
-  if (!HerdrClient.isInHerdrPane()) {
-    return;
-  }
-
+  if (process.env.BALAUR_WORKER === "1" || !HerdrClient.isInHerdrPane()) return;
   const herdrEnv = HerdrClient.getHerdrEnv();
   if (!herdrEnv) return;
-  const { socketPath, paneId: leadPaneId } = herdrEnv;
+  const makeClient = () => new HerdrClient({ socketPath: herdrEnv.socketPath, timeoutMs: 10000 });
 
-  const makeClient = () => new HerdrClient({ socketPath, timeoutMs: 10000 });
-
-  // Reconstruct state from session on reload/resume.
   pi.on("session_start", async (_event, ctx) => {
     handleMap.clear();
-    // Reconstruct handles from tool result details in the session branch.
-    if (ctx?.sessionManager?.getBranch) {
-      try {
-        for (const entry of ctx.sessionManager.getBranch()) {
-          if (entry?.type === "message" && entry.message?.role === "toolResult") {
-            const toolName = entry.message.toolName;
-            if (toolName === "herdr_agent" && entry.message.details?.store) {
-              const store = deserializeStore(entry.message.details.store);
-              for (const h of listHandles(store)) {
-                handleMap.set(h.handleId, h);
-              }
-            }
-          }
-        }
-        // Reconcile against current panes after reconstruction.
-        await reconcileStore();
-      } catch {
-        // Best-effort reconstruction; continue with empty store.
+    for (const entry of ctx?.sessionManager?.getBranch?.() || []) {
+      if (entry?.type === "message" && entry.message?.role === "toolResult" && entry.message.toolName === "herdr_agent" && entry.message.details?.store) {
+        for (const handle of listHandles(deserializeStore(entry.message.details.store))) handleMap.set(handle.handleId, handle);
       }
+    }
+    if (!handleMap.size) return;
+    try {
+      const store = createStore();
+      const reconciled = reconcileHandles(store, await listAgents(makeClient()));
+      setStore(reconciled);
+    } catch {
+      // Herdr is unavailable: retain persisted identities without rebinding them.
     }
   });
 
-  async function reconcileStore() {
-    if (handleMap.size === 0) return;
-    try {
-      const client = makeClient();
-      const agents = await listAgents(client);
-      const paneIds = new Set(agents.map((a: any) => a.pane_id));
-      for (const handle of handleMap.values()) {
-        if (!paneIds.has(handle.paneId)) {
-          handle.status = "missing";
-        }
-      }
-    } catch {
-      // If we can't reach Herdr, leave handles as-is.
-    }
+  function createStore() {
+    const store = createHandleStore();
+    for (const handle of handleMap.values()) store.handles[handle.handleId] = handle;
+    return store;
+  }
+  function setStore(store: ReturnType<typeof createHandleStore>) {
+    handleMap.clear();
+    for (const handle of listHandles(store)) handleMap.set(handle.handleId, handle);
+  }
+  function details(extra: Record<string, unknown> = {}) {
+    const store = createStore();
+    return { store: serializeStore(store), handles: listHandles(store), ...extra };
+  }
+  function bounded(text: string) {
+    const value = truncateHead(text, { maxBytes: DEFAULT_MAX_BYTES, maxLines: DEFAULT_MAX_LINES });
+    return value.truncated ? `${value.content}\n\n[Output truncated: ${value.outputLines}/${value.totalLines} lines, ${formatSize(value.outputBytes)}/${formatSize(value.totalBytes)}. Full evidence is in details.]` : value.content;
+  }
+  function boundedError(error: unknown) {
+    const text = error instanceof Error ? error.message : String(error);
+    return Buffer.byteLength(text) > MAX_ERROR_BYTES ? `${text.slice(0, MAX_ERROR_BYTES)}… [error truncated]` : text;
   }
 
-  async function discoverRoles(): Promise<Map<string, { role: RoleConfig; filePath: string }>> {
-    const roles = new Map();
-    const agentsDir = resolve(process.cwd(), ".pi/agents");
-    if (!existsSync(agentsDir)) return roles;
-    const entries = await readdir(agentsDir);
-    for (const entry of entries) {
+  async function discoverRoles(cwd: string) {
+    const roles = new Map<string, { role: RoleConfig; filePath: string }>();
+    const errors = new Map<string, string>();
+    const agentsDir = resolve(cwd, ".pi", "agents");
+    if (!existsSync(agentsDir)) return { roles, errors };
+    for (const entry of await readdir(agentsDir)) {
       if (!entry.endsWith(".md")) continue;
       const filePath = join(agentsDir, entry);
+      let name = entry.slice(0, -3);
       try {
-        const content = await readFile(filePath, "utf-8");
-        const role = parseRoleFile(content, filePath);
-        const name = roleNameFromFilename(entry);
-        roles.set(name, { role, filePath });
-      } catch {
-        // Skip unparseable role files.
+        name = roleNameFromFilename(entry);
+        roles.set(name, { role: parseRoleFile(await readFile(filePath, "utf8"), filePath), filePath });
+      } catch (error) {
+        errors.set(name, boundedError(error));
       }
     }
-    return roles;
+    return { roles, errors };
   }
-
-  function truncateOutput(text: string): string {
-    const truncation = truncateHead(text, {
-      maxLines: DEFAULT_MAX_LINES,
-      maxBytes: DEFAULT_MAX_BYTES,
-    });
-    let result = truncation.content;
-    if (truncation.truncated) {
-      result += `\n\n[Output truncated: ${truncation.outputLines} of ${truncation.totalLines} lines (${formatSize(truncation.outputBytes)} of ${formatSize(truncation.totalBytes)}). Full evidence preserved in tool details.]`;
-    }
-    return result;
+  function requireHandle(id: string | undefined) {
+    if (!id) throw new Error("handle is required for this action");
+    const handle = handleMap.get(id);
+    if (!handle) throw new Error(`Unknown handle: ${id}`);
+    return handle;
   }
-
-  function storeToDetails() {
-    const store = createHandleStore();
-    for (const h of handleMap.values()) {
-      store.handles[h.handleId] = h;
-    }
-    return { store: serializeStore(store), handles: listHandles(store) };
-  }
+  async function pinned(handle: WorkerHandle, signal?: AbortSignal) { return assertPinnedAgent(makeClient(), handle, signal); }
 
   pi.registerTool({
-    name: "herdr_agent",
-    label: "Herdr Agent",
-    description: [
-      "Start and control interactive Pi workers in visible, persistent Herdr panes.",
-      "Actions: start (create worker), list (show workers), status (inspect), wait (block until idle/done),",
-      "read (diagnostic terminal output), prompt (send message), collect (authoritative finalized result),",
-      "close (human-confirmed pane cleanup).",
-      "Returns from start as soon as the worker is ready; does not wait for task completion.",
-    ].join(" "),
+    name: "herdr_agent", label: "Herdr Agent",
+    description: "Start and control visible interactive Pi workers in Herdr panes. read is diagnostic; collect is the authoritative finalized Pi JSONL result.",
     promptSnippet: "Start and control visible Herdr Pi workers",
-    promptGuidelines: [
-      "Use herdr_agent to start visible worker Pi sessions in Herdr panes for delegated implementation or review.",
-      "Always use collect (not read) for the authoritative finalized worker result; read is diagnostic terminal output only.",
-      "Wait for a worker to reach idle/done before collecting its result.",
-    ],
+    promptGuidelines: ["Use herdr_agent for visible Herdr workers.", "Use herdr_agent collect, not read, for the authoritative finalized result."],
     parameters: HerdrAgentParams,
-
-    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-      const action = params.action;
-
-      // Fail closed outside Herdr.
-      if (!HerdrClient.isInHerdrPane()) {
-        throw new Error("herdr_agent is only available inside a Herdr pane");
-      }
-
+    async execute(_id, params, signal, _update, ctx) {
+      if (!HerdrClient.isInHerdrPane()) throw new Error("herdr_agent is only available inside a Herdr pane");
       try {
-        switch (action) {
-          case "start":
-            return await handleStart(params, ctx, signal);
-          case "list":
-            return await handleList();
-          case "status":
-            return await handleStatus(params);
-          case "wait":
-            return await handleWait(params, signal);
-          case "read":
-            return await handleRead(params);
-          case "prompt":
-            return await handlePrompt(params, signal);
-          case "collect":
-            return await handleCollect(params);
-          case "close":
-            return await handleClose(params, ctx);
-          default:
-            throw new Error(`Unknown action: ${action}`);
+        switch (params.action) {
+          case "start": return await start(params, ctx, signal);
+          case "list": return { content: [{ type: "text", text: bounded(renderList()) }], details: details() };
+          case "status": return await status(params, signal);
+          case "wait": return await wait(params, signal);
+          case "read": return await read(params, signal);
+          case "prompt": return await prompt(params, signal);
+          case "collect": return await collect(params, signal);
+          case "close": return await close(params, ctx, signal);
         }
-      } catch (err) {
-        // Return error as a tool result (not thrown) so the lead sees it.
-        const message = err instanceof Error ? err.message : String(err);
-        return {
-          content: [{ type: "text", text: `Error: ${message}` }],
-          details: { ...storeToDetails(), error: message },
-          isError: true,
-        };
+      } catch (error) {
+        throw new Error(boundedError(error));
       }
     },
-
-    renderCall(args, theme, _context) {
-      const action = args.action || "...";
-      let text =
-        theme.fg("toolTitle", theme.bold("herdr_agent ")) +
-        theme.fg("accent", action);
-
-      if (args.role) {
-        text += " " + theme.fg("accent", args.role);
-      }
-      if (args.handle) {
-        text += " " + theme.fg("dim", args.handle);
-      }
-      if (args.prompt) {
-        const preview = args.prompt.length > 50 ? `${args.prompt.slice(0, 50)}...` : args.prompt;
-        text += `\n  ${theme.fg("dim", preview)}`;
-      }
-      return new Text(text, 0, 0);
+    renderCall(args, theme) {
+      const suffix = args.role || args.handle || "";
+      return new Text(theme.fg("toolTitle", theme.bold("herdr_agent ")) + theme.fg("accent", `${args.action} ${suffix}`.trim()), 0, 0);
     },
-
-    renderResult(result, { expanded }, theme, _context) {
-      const text = result.content[0];
-      let content = text?.type === "text" ? text.text : "(no output)";
-
-      const details = result.details as any;
-      if (details?.error) {
-        return new Text(theme.fg("error", `Error: ${details.error}`), 0, 0);
-      }
-
-      if (expanded && details?.handles?.length > 0) {
-        content += "\n\nWorkers:";
-        for (const h of details.handles) {
-          const status = h.status === "ready" || h.status === "idle" || h.status === "done"
-            ? theme.fg("success", h.status)
-            : h.status === "error" || h.status === "missing" || h.status === "replaced"
-              ? theme.fg("error", h.status)
-              : theme.fg("warning", h.status);
-          content += `\n  ${theme.fg("accent", h.handleId)} ${status} ${theme.fg("dim", `(${h.role} @ ${h.paneId})`)}`;
-        }
-      }
-      return new Text(content, 0, 0);
+    renderResult(result, { expanded }, theme) {
+      const text = result.content[0]?.type === "text" ? result.content[0].text : "(no output)";
+      const handles = (result.details as any)?.handles || [];
+      const extra = expanded && handles.length ? `\n${handles.map((h: WorkerHandle) => `${h.handleId} ${h.status} ${h.role} @ ${h.paneId}`).join("\n")}` : "";
+      return new Text(text + extra, 0, 0);
     },
   });
 
-  async function handleStart(params: any, ctx: any, signal: AbortSignal | undefined) {
-    if (!params.role) {
-      throw new Error("role is required for start action");
+  async function start(params: any, ctx: any, signal?: AbortSignal) {
+    if (!params.role) throw new Error("role is required for start");
+    const catalog = await discoverRoles(ctx.cwd);
+    const entry = catalog.roles.get(params.role);
+    if (!entry) {
+      const parseError = catalog.errors.get(params.role);
+      if (parseError) throw new Error(parseError);
+      throw new Error(`Unknown role '${params.role}'. Available: ${[...catalog.roles.keys()].join(", ") || "none"}`);
     }
-
-    const roles = await discoverRoles();
-    const roleEntry = roles.get(params.role);
-    if (!roleEntry) {
-      const available = [...roles.keys()].join(", ") || "none";
-      throw new Error(`Unknown role '${params.role}'. Available: ${available}`);
-    }
-
     const client = makeClient();
-
-    // Verify protocol version.
-    const ping = await client.ping();
-    if (ping.protocol !== EXPECTED_PROTOCOL) {
-      throw new Error(
-        `Herdr protocol mismatch: expected ${EXPECTED_PROTOCOL}, got ${ping.protocol}`
-      );
-    }
-
-    // Create a new visible pane by splitting the lead pane.
-    const workerEnv = buildWorkerEnv();
-    const pane = await createPane(client, {
-      currentPaneId: leadPaneId,
-      direction: "right",
-      ratio: 0.5,
-      cwd: ctx?.cwd || process.cwd(),
-      env: workerEnv,
-    });
-
-    // Start an interactive Pi agent in the new pane.
-    // Use a unique agent name to avoid collisions with existing workers.
-    const agentName = `${params.role}-${Date.now().toString(36)}`;
-    const started = await startAgent(client, {
-      paneId: pane.pane_id,
-      agentName,
-      role: roleEntry.role,
-      cwd: ctx?.cwd || process.cwd(),
-    });
-
-    // Return only once the interactive worker is actually ready, not merely
-    // when Herdr has accepted the launch request. Pi reads the prompt file
-    // during startup, so remove it only after this readiness boundary.
+    const ping = await client.ping(signal);
+    if (ping.protocol !== EXPECTED_PROTOCOL || !ping.capabilities.live_handoff) throw new Error(`Herdr protocol/capability mismatch (protocol ${ping.protocol})`);
+    const pane = await createPane(client, { currentPaneId: herdrEnv.paneId, direction: "right", ratio: 0.5, cwd: ctx.cwd, env: buildWorkerEnv() }, signal);
+    const started = await startAgent(client, { paneId: pane.pane_id, agentName: `${params.role}-${Date.now().toString(36)}`, role: entry.role, cwd: ctx.cwd }, signal);
+    let identity;
     try {
-      await waitForInteractiveReady(client, started.agent_name, 60000);
-    } finally {
-      await removeRolePromptFile(started.promptFile);
-    }
-
-    // Create a stable handle.
-    let handle = createHandle({
-      paneId: pane.pane_id,
-      role: params.role,
-      workspaceId: pane.workspace_id,
-      worktreePath: ctx?.cwd || process.cwd(),
-    });
-    handle = {
-      ...handle,
-      agentName: started.agent_name,
-      status: "ready",
-    };
+      await waitForInteractiveReady(client, started.agent_name, 60000, signal);
+      identity = await waitForSessionIdentity(client, started.agent_name, 10000, signal);
+    } finally { await removeRolePromptFile(started.promptFile); }
+    const handle = { ...createHandle({ paneId: pane.pane_id, role: params.role, workspaceId: pane.workspace_id, worktreePath: ctx.cwd, ...identity }), status: "ready" as const };
     handleMap.set(handle.handleId, handle);
-
-    // Publish pane metadata for role and bridge state.
-    await reportPaneMetadata(client, pane.pane_id, {
-      "balaur.role": params.role,
-      "balaur.bridge": "herdr-agent",
-    }).catch(() => { /* best-effort */ });
-
-    const summary = `Started worker '${params.role}' in pane ${pane.pane_id} (handle: ${handle.handleId}). The worker is interactive and ready for prompts.`;
-    return {
-      content: [{ type: "text", text: truncateOutput(summary) }],
-      details: { ...storeToDetails(), handle: handle.handleId, paneId: pane.pane_id },
-    };
+    await reportPaneMetadata(client, pane.pane_id, { role: params.role, bridge: "herdr-agent", state: "ready" }, signal);
+    return { content: [{ type: "text", text: bounded(`Started ${params.role}: handle ${handle.handleId}, pane ${pane.pane_id}, session ${handle.sessionKind}:${handle.sessionValue}.`) }], details: details({ handle: handle.handleId, session: { kind: handle.sessionKind, value: handle.sessionValue } }) };
   }
-
-  async function handleList() {
-    const list = [...handleMap.values()];
-    if (list.length === 0) {
-      return {
-        content: [{ type: "text", text: "No active workers." }],
-        details: storeToDetails(),
-      };
-    }
-    const lines = list.map((h) =>
-      `${h.handleId}: ${h.role} @ ${h.paneId} [${h.status}]${h.agentName ? ` agent=${h.agentName}` : ""}`
-    );
-    return {
-      content: [{ type: "text", text: truncateOutput(lines.join("\n")) }],
-      details: storeToDetails(),
-    };
+  function renderList() { return handleMap.size ? [...handleMap.values()].map((h) => `${h.handleId}: ${h.role} @ ${h.paneId} [${h.status}]`).join("\n") : "No active workers."; }
+  async function status(params: any, signal?: AbortSignal) {
+    const handle = requireHandle(params.handle);
+    try { const agent = await pinned(handle, signal); handle.status = agent.agent_status === "done" ? "done" : agent.agent_status === "idle" ? "idle" : "working"; } catch { if (handle.status !== "replaced") handle.status = "missing"; }
+    return { content: [{ type: "text", text: bounded(`${handle.handleId}: ${handle.status}\nagent=${handle.agentName}\npane=${handle.paneId}\nsession=${handle.sessionKind}:${handle.sessionValue}`) }], details: details({ handle: handle.handleId }) };
   }
-
-  async function handleStatus(params: any) {
-    if (!params.handle) throw new Error("handle is required for status action");
-    const handle = handleMap.get(params.handle);
-    if (!handle) throw new Error(`Unknown handle: ${params.handle}`);
-
-    const client = makeClient();
-    let agentStatus = "unknown";
-    let occupant = handle.agentName;
-    try {
-      if (handle.agentName) {
-        const agent = await assertPinnedAgent(client, handle);
-        agentStatus = agent?.agent_status || "unknown";
-      }
-    } catch {
-      // Preserve a detected replacement; otherwise the agent is missing.
-      if (handle.status !== "replaced") {
-        handle.status = "missing";
-      }
-    }
-
-    const lines = [
-      `Handle: ${handle.handleId}`,
-      `Role: ${handle.role}`,
-      `Pane: ${handle.paneId}`,
-      `Agent: ${occupant || "(none)"}`,
-      `Status: ${handle.status}`,
-      `Agent status: ${agentStatus}`,
-      handle.worktreePath ? `CWD: ${handle.worktreePath}` : null,
-      handle.sessionPath ? `Session: ${handle.sessionPath}` : null,
-    ].filter(Boolean);
-    return {
-      content: [{ type: "text", text: truncateOutput(lines.join("\n")) }],
-      details: { ...storeToDetails(), handle: handle.handleId },
-    };
-  }
-
-  async function handleWait(params: any, signal: AbortSignal | undefined) {
-    if (!params.handle) throw new Error("handle is required for wait action");
-    const handle = handleMap.get(params.handle);
-    if (!handle) throw new Error(`Unknown handle: ${params.handle}`);
-    if (!handle.agentName) throw new Error("worker has no agent name");
-
-    const client = makeClient();
-    await assertPinnedAgent(client, handle);
-    const result = await waitForAgent(client, {
-      target: handle.agentName,
-      until: ["idle", "done"],
-      timeoutMs: params.timeout_ms || 120000,
-    });
-
-    if (result.timedOut) {
-      // Timeouts never kill a worker — just report blocked/timeout.
-      handle.status = "working";
-      return {
-        content: [{
-          type: "text",
-          text: `Worker '${handle.role}' is still running (timeout after ${params.timeout_ms || 120000}ms). Use read for diagnostic output or wait again.`,
-        }],
-        details: { ...storeToDetails(), handle: handle.handleId, timedOut: true },
-      };
-    }
-
+  async function wait(params: any, signal?: AbortSignal) {
+    const handle = requireHandle(params.handle); await pinned(handle, signal);
+    const result = await waitForAgent(makeClient(), { target: handle.agentName, until: ["idle", "done"], timeoutMs: params.timeout_ms || 120000 }, signal);
+    if (result.timedOut) return { content: [{ type: "text", text: bounded(`Worker ${handle.handleId} timed out; it was not killed.`) }], details: details({ handle: handle.handleId, timedOut: true }) };
     handle.status = result.status === "done" ? "done" : "idle";
-    return {
-      content: [{
-        type: "text",
-        text: `Worker '${handle.role}' reached status: ${result.status}`,
-      }],
-      details: { ...storeToDetails(), handle: handle.handleId, status: result.status },
-    };
+    return { content: [{ type: "text", text: bounded(`Worker ${handle.handleId} reached ${result.status}.`) }], details: details({ handle: handle.handleId }) };
   }
-
-  async function handleRead(params: any) {
-    if (!params.handle) throw new Error("handle is required for read action");
-    const handle = handleMap.get(params.handle);
-    if (!handle) throw new Error(`Unknown handle: ${params.handle}`);
-    if (!handle.agentName) throw new Error("worker has no agent name");
-
-    const client = makeClient();
-    await assertPinnedAgent(client, handle);
-    const result = await readAgent(client, {
-      target: handle.agentName,
-      source: "recent",
-      lines: params.lines || 200,
-    });
-
-    const header = `[diagnostic terminal output for '${handle.role}' — this is NOT the finalized result; use collect for that]`;
-    const text = `${header}\n${result.text}`;
-    return {
-      content: [{ type: "text", text: truncateOutput(text) }],
-      details: {
-        ...storeToDetails(),
-        handle: handle.handleId,
-        truncated: result.truncated,
-        rawOutput: result.text, // Preserve full evidence in details
-      },
-    };
+  async function read(params: any, signal?: AbortSignal) {
+    const handle = requireHandle(params.handle); await pinned(handle, signal);
+    const output = await readAgent(makeClient(), { target: handle.agentName, lines: params.lines || 200 }, signal);
+    return { content: [{ type: "text", text: bounded(`[Diagnostic terminal output; use collect for the finalized result]\n${output.text}`) }], details: details({ handle: handle.handleId, rawOutput: output.text, truncated: output.truncated }) };
   }
-
-  async function handlePrompt(params: any, signal: AbortSignal | undefined) {
-    if (!params.handle) throw new Error("handle is required for prompt action");
-    if (!params.prompt) throw new Error("prompt text is required for prompt action");
-    const handle = handleMap.get(params.handle);
-    if (!handle) throw new Error(`Unknown handle: ${params.handle}`);
-    if (!handle.agentName) throw new Error("worker has no agent name");
-
-    const client = makeClient();
-    await assertPinnedAgent(client, handle);
-    // Prompt without waiting — return immediately.
-    const result = await promptAgent(client, {
-      target: handle.agentName,
-      text: params.prompt,
-      wait: false,
-    });
-
-    handle.status = "working";
-    return {
-      content: [{
-        type: "text",
-        text: `Prompted worker '${handle.role}'. Use wait then collect for the result.`,
-      }],
-      details: { ...storeToDetails(), handle: handle.handleId, status: result.status },
-    };
+  async function prompt(params: any, signal?: AbortSignal) {
+    if (!params.prompt) throw new Error("prompt is required for prompt");
+    const handle = requireHandle(params.handle); await pinned(handle, signal);
+    await promptAgent(makeClient(), { target: handle.agentName, text: params.prompt }, signal); handle.status = "working";
+    return { content: [{ type: "text", text: `Prompted ${handle.handleId}.` }], details: details({ handle: handle.handleId }) };
   }
-
-  async function handleCollect(params: any) {
-    if (!params.handle) throw new Error("handle is required for collect action");
-    const handle = handleMap.get(params.handle);
-    if (!handle) throw new Error(`Unknown handle: ${params.handle}`);
-
-    // The authoritative result comes from the finalized Pi session JSONL.
-    // We need the session file path. Herdr's agent.get may report it via
-    // agent_session_path, but the bridge also tries to discover it.
-    const client = makeClient();
-    await assertPinnedAgent(client, handle);
-    let sessionPath = handle.sessionPath;
-
-    if (!sessionPath) {
-      // Try to get the session path from the agent info.
-      try {
-        if (handle.agentName) {
-          const agent = await assertPinnedAgent(client, handle);
-          // Herdr's AgentInfo has agent_session which has value (path or id).
-          if (agent?.agent_session?.value) {
-            sessionPath = agent.agent_session.value;
-            handle.sessionPath = sessionPath;
-          }
-        }
-      } catch {
-        // Fall through to error.
-      }
-    }
-
-    if (!sessionPath) {
-      throw new Error(
-        `No session path available for worker '${handle.role}'. ` +
-        "Ensure the worker has produced output (wait for idle/done first)."
-      );
-    }
-
-    const result = await waitForFinalizedSessionResult(sessionPath, 10000);
-
-    if (result.stopReason === "incomplete") {
-      return {
-        content: [{
-          type: "text",
-          text: `Worker '${handle.role}' session is incomplete (no finalized assistant result yet). Wait for idle/done first.`,
-        }],
-        details: { ...storeToDetails(), handle: handle.handleId, stopReason: result.stopReason },
-      };
-    }
-
-    handle.status = result.stopReason === "end" ? "done" : handle.status;
-
-    // Build a concise summary for the model, with full evidence in details.
-    let summary = result.text;
-    if (result.toolCalls.length > 0) {
-      summary += `\n\n[Tool calls: ${result.toolCalls.length}, turns: ${result.turns}]`;
-    }
-
-    return {
-      content: [{ type: "text", text: truncateOutput(summary) }],
-      details: {
-        ...storeToDetails(),
-        handle: handle.handleId,
-        stopReason: result.stopReason,
-        model: result.model,
-        usage: result.usage,
-        turns: result.turns,
-        toolCalls: result.toolCalls,
-        fullText: result.text, // Preserve full text in details
-      },
-    };
+  async function collect(params: any, signal?: AbortSignal) {
+    const handle = requireHandle(params.handle); await pinned(handle, signal);
+    const filePath = await waitForPiSessionReference({ kind: handle.sessionKind, value: handle.sessionValue }, 10000, signal);
+    const result = await waitForFinalizedSessionResult(filePath, 10000, signal);
+    if (result.stopReason === "incomplete") return { content: [{ type: "text", text: "Worker session has no finalized result yet." }], details: details({ handle: handle.handleId, stopReason: result.stopReason }) };
+    return { content: [{ type: "text", text: bounded(result.text) }], details: details({ handle: handle.handleId, sessionPath: filePath, stopReason: result.stopReason, toolCalls: result.toolCalls, usage: result.usage, fullText: result.text }) };
   }
-
-  async function handleClose(params: any, ctx: any) {
-    if (!params.handle) throw new Error("handle is required for close action");
-    const handle = handleMap.get(params.handle);
-    if (!handle) throw new Error(`Unknown handle: ${params.handle}`);
-
-    // Close requires interactive human confirmation.
-    if (!ctx?.hasUI) {
-      throw new Error("close requires interactive confirmation — no UI available");
-    }
-
-    const confirmed = await ctx.ui.confirm(
-      "Close worker pane?",
-      `This will close Herdr pane ${handle.paneId} (worker '${handle.role}'). The pane content is not saved.`,
-    );
-    if (!confirmed) {
-      return {
-        content: [{ type: "text", text: "Close cancelled by user." }],
-        details: { ...storeToDetails(), handle: handle.handleId, cancelled: true },
-      };
-    }
-
-    const client = makeClient();
-    await closePane(client, handle.paneId);
-    handleMap.delete(handle.handleId);
-
-    return {
-      content: [{
-        type: "text",
-        text: `Closed worker '${handle.role}' (pane ${handle.paneId}, handle ${handle.handleId}).`,
-      }],
-      details: { ...storeToDetails(), closed: handle.handleId },
-    };
+  async function close(params: any, ctx: any, signal?: AbortSignal) {
+    const handle = requireHandle(params.handle); await pinned(handle, signal);
+    if (!await requestCloseConfirmation(ctx, handle)) return { content: [{ type: "text", text: "Close cancelled by user." }], details: details({ handle: handle.handleId, cancelled: true }) };
+    await pinned(handle, signal); // close race: confirm does not authorize a replacement
+    await closePane(makeClient(), handle.paneId, signal); handleMap.delete(handle.handleId);
+    return { content: [{ type: "text", text: `Closed ${handle.handleId}.` }], details: details({ closed: handle.handleId }) };
   }
 }

@@ -18,8 +18,8 @@ import { randomUUID } from 'node:crypto';
  * @property {string} [workspaceId]  - Herdr workspace ID.
  * @property {string} [worktreePath] - Working directory / worktree path.
  * @property {string} [agentName]    - Herdr agent name (if started).
- * @property {string} [sessionPath]  - Pi session file path (if known).
- * @property {string} [sessionId]    - Pi session ID (if known).
+ * @property {'id'|'path'} [sessionKind] - Herdr agent session reference kind.
+ * @property {string} [sessionValue] - Exact Herdr agent session reference value.
  * @property {'starting'|'ready'|'working'|'idle'|'done'|'error'|'replaced'|'missing'} status
  * @property {string} createdAt      - ISO 8601 creation timestamp.
  * @property {string} [updatedAt]    - ISO 8601 last update timestamp.
@@ -50,6 +50,8 @@ export function createHandleStore() {
  * @param {string} opts.role
  * @param {string} [opts.workspaceId]
  * @param {string} [opts.worktreePath]
+ * @param {'id'|'path'} [opts.sessionKind]
+ * @param {string} [opts.sessionValue]
  * @returns {WorkerHandle}
  */
 export function createHandle(opts) {
@@ -63,6 +65,8 @@ export function createHandle(opts) {
     role: opts.role,
     workspaceId: opts.workspaceId,
     worktreePath: opts.worktreePath,
+    sessionKind: opts.sessionKind,
+    sessionValue: opts.sessionValue,
     status: 'starting',
     createdAt: now,
     updatedAt: now,
@@ -164,28 +168,18 @@ export function listHandles(store) {
  * different process. Does NOT silently rebind handles to new panes.
  *
  * @param {HandleStoreState} store
- * @param {Array<{ pane_id: string, cwd?: string }>} currentPanes
+ * @param {Array<{ pane_id: string, name?: string, agent_session?: { kind: string, value: string } }>} currentPanes
  * @returns {HandleStoreState}
  */
 export function reconcileHandles(store, currentPanes) {
-  const paneMap = new Map();
-  for (const pane of currentPanes) {
-    paneMap.set(pane.pane_id, pane);
-  }
-
   let updated = store;
   for (const handle of Object.values(store.handles)) {
-    const pane = paneMap.get(handle.paneId);
-    if (!pane) {
-      // Pane is gone
-      if (handle.status !== 'missing' && handle.status !== 'replaced') {
-        updated = updateHandle(updated, handle.handleId, { status: 'missing' });
-      }
-    }
-    // We don't rebind: if the pane exists but has different content,
-    // that's a replacement scenario detected by the caller.
+    const samePane = currentPanes.filter((agent) => agent.pane_id === handle.paneId);
+    const exact = samePane.find((agent) => agent.name === handle.agentName && agent.agent_session?.kind === handle.sessionKind && agent.agent_session?.value === handle.sessionValue);
+    if (exact) continue;
+    const replacement = samePane.length > 0 || currentPanes.some((agent) => agent.name === handle.agentName);
+    updated = updateHandle(updated, handle.handleId, { status: replacement ? 'replaced' : 'missing' });
   }
-
   return updated;
 }
 

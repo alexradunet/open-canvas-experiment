@@ -1,268 +1,142 @@
-/**
- * Structured result collection from finalized Pi session JSONL.
- *
- * Parses the JSONL session file produced by Pi and extracts the authoritative
- * finalized assistant result with tool/usage evidence. Ignores partial
- * assistant output and intermediate tool results.
- *
- * @module session-collector
- */
-
+/** Authoritative Pi v3 JSONL session result collection. */
 import { createReadStream } from 'node:fs';
-import { createInterface } from 'node:readline';
+import { readdir, readFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 
-/** Maximum JSONL file size to parse (10 MB) */
 export const MAX_SESSION_BYTES = 10 * 1024 * 1024;
-
-/** Maximum number of lines to parse */
 export const MAX_SESSION_LINES = 100_000;
+const SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-/**
- * @typedef {Object} SessionResult
- * @property {string} text           - The finalized assistant text output.
- * @property {string} stopReason     - Why the session ended (end, error, aborted, etc.)
- * @property {Object} [usage]        - Token usage statistics.
- * @property {string} [model]        - Model used.
- * @property {ToolCallEvidence[]} toolCalls - Tool calls made during the session.
- * @property {number} turns          - Number of assistant turns.
- */
-
-/**
- * @typedef {Object} ToolCallEvidence
- * @property {string} name       - Tool name.
- * @property {Object} arguments  - Tool arguments.
- * @property {Object} [result]   - Tool result summary.
- */
-
-/**
- * Parse a Pi session JSONL file and extract the finalized result.
- *
- * @param {string} filePath - Path to the JSONL session file.
- * @returns {Promise<SessionResult>}
- */
-export async function collectSessionResult(filePath) {
-  const entries = await readJsonlEntries(filePath);
-  return extractFinalizedResult(entries);
+export async function resolvePiSessionReference(session, sessionRoot = join(homedir(), '.pi', 'agent', 'sessions')) {
+  if (!session || (session.kind !== 'path' && session.kind !== 'id') || typeof session.value !== 'string') throw new Error('invalid Pi session reference');
+  if (session.kind === 'path') {
+    if (!session.value.startsWith('/') || !session.value.endsWith('.jsonl') || /[\x00\n\r]/.test(session.value)) throw new Error('unsafe Pi session path reference');
+    // Herdr can report the absolute path just before Pi creates it; the
+    // bounded collector retry owns that creation/flush race.
+    return session.value;
+  }
+  if (!SESSION_ID_RE.test(session.value)) throw new Error('invalid Pi session ID reference');
+  const matches = await findSessionFilesById(sessionRoot, session.value);
+  if (matches.length !== 1) throw new Error(matches.length ? `ambiguous Pi session ID: ${session.value}` : `Pi session ID not found: ${session.value}`);
+  return matches[0];
 }
 
-/**
- * Wait briefly for Pi to flush a session file and record its finalized result.
- * Herdr can report the session path just before Pi creates or flushes it.
- * This retries only collection reads; it never signals, interrupts, or kills
- * the worker.
- *
- * @param {string} filePath
- * @param {number} [timeoutMs]
- * @returns {Promise<SessionResult>}
- */
-export async function waitForFinalizedSessionResult(filePath, timeoutMs = 10000) {
+async function findSessionFilesById(root, sessionId) {
+  const files = [];
+  async function walk(directory) {
+    const entries = await readdir(directory, { withFileTypes: true });
+    for (const entry of entries) {
+      const path = join(directory, entry.name);
+      if (entry.isDirectory()) await walk(path);
+      else if (entry.isFile() && entry.name.endsWith('.jsonl')) {
+        const firstLine = (await readFile(path, 'utf8')).split('\n', 1)[0];
+        try { if (JSON.parse(firstLine)?.type === 'session' && JSON.parse(firstLine)?.id === sessionId) files.push(path); } catch { /* ignore malformed candidate */ }
+      }
+    }
+  }
+  await walk(root);
+  return files;
+}
+
+export async function waitForPiSessionReference(session, timeoutMs = 10000, signal, sessionRoot) {
   const deadline = Date.now() + timeoutMs;
   let lastError;
   while (Date.now() < deadline) {
+    if (signal?.aborted) throw new Error('collection aborted');
+    try { return await resolvePiSessionReference(session, sessionRoot); } catch (error) { lastError = error; }
+    await sleep(250, signal);
+  }
+  throw lastError || new Error('Pi session reference was not resolved');
+}
+
+export async function collectSessionResult(filePath) {
+  return extractFinalizedResult(await readJsonlEntries(filePath));
+}
+
+export async function waitForFinalizedSessionResult(filePath, timeoutMs = 10000, signal) {
+  const deadline = Date.now() + timeoutMs;
+  let lastError;
+  while (Date.now() < deadline) {
+    if (signal?.aborted) throw new Error('collection aborted');
     try {
       const result = await collectSessionResult(filePath);
       if (result.stopReason !== 'incomplete') return result;
-    } catch (err) {
-      lastError = err;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 250));
+    } catch (error) { lastError = error; }
+    await sleep(250, signal);
   }
   if (lastError) throw lastError;
   return collectSessionResult(filePath);
 }
 
-/**
- * Parse JSONL entries from a file, respecting size and line limits.
- *
- * @param {string} filePath
- * @returns {Promise<Object[]>}
- */
-export async function readJsonlEntries(filePath) {
-  const entries = [];
-  let totalBytes = 0;
-  let lineCount = 0;
-
-  return new Promise((resolve, reject) => {
-    const stream = createReadStream(filePath, { encoding: 'utf-8' });
-    let buffer = '';
-
-    stream.on('data', (chunk) => {
-      totalBytes += Buffer.byteLength(chunk);
-      if (totalBytes > MAX_SESSION_BYTES) {
-        stream.destroy();
-        reject(new Error(`session file exceeds maximum size (${MAX_SESSION_BYTES} bytes)`));
-        return;
-      }
-
-      buffer += chunk;
-      const lines = buffer.split('\n');
-      buffer = lines.pop() || '';
-
-      for (const line of lines) {
-        if (!line.trim()) continue;
-        lineCount++;
-        if (lineCount > MAX_SESSION_LINES) {
-          stream.destroy();
-          reject(new Error(`session file exceeds maximum lines (${MAX_SESSION_LINES})`));
-          return;
-        }
-        try {
-          entries.push(JSON.parse(line));
-        } catch {
-          // Skip malformed lines
-        }
-      }
-    });
-
-    stream.on('end', () => {
-      if (buffer.trim()) {
-        lineCount++;
-        try {
-          entries.push(JSON.parse(buffer.trim()));
-        } catch {
-          // Skip trailing malformed line
-        }
-      }
-      resolve(entries);
-    });
-
-    stream.on('error', (err) => {
-      reject(new Error(`failed to read session file: ${err.message}`));
-    });
+function sleep(ms, signal) {
+  return new Promise((resolvePromise, reject) => {
+    const timer = setTimeout(resolvePromise, ms);
+    if (signal?.aborted) { clearTimeout(timer); reject(new Error('collection aborted')); }
+    signal?.addEventListener('abort', () => { clearTimeout(timer); reject(new Error('collection aborted')); }, { once: true });
   });
 }
 
-/**
- * Extract the finalized assistant result from parsed JSONL entries.
- *
- * Pi JSONL session files contain entries with types like:
- * - { type: "message", message: { role: "assistant", content: [...], ... } }
- * - { type: "message", message: { role: "toolResult", ... } }
- * - { type: "message_end", message: { ... } }
- *
- * We want the LAST finalized assistant message with stopReason !== "error"
- * and collect tool call evidence from the session.
- *
- * @param {Object[]} entries
- * @returns {SessionResult}
- */
+export async function readJsonlEntries(filePath) {
+  const entries = [];
+  let bytes = 0;
+  let lines = 0;
+  return new Promise((resolvePromise, reject) => {
+    const stream = createReadStream(filePath, { encoding: 'utf8' });
+    let buffer = '';
+    const parse = (line) => {
+      if (!line.trim()) return;
+      lines++;
+      if (lines > MAX_SESSION_LINES) { stream.destroy(); reject(new Error(`session file exceeds maximum lines (${MAX_SESSION_LINES})`)); return; }
+      try { entries.push(JSON.parse(line)); } catch { /* malformed records do not become results */ }
+    };
+    stream.on('data', (chunk) => {
+      bytes += Buffer.byteLength(chunk);
+      if (bytes > MAX_SESSION_BYTES) { stream.destroy(); reject(new Error(`session file exceeds maximum size (${MAX_SESSION_BYTES} bytes)`)); return; }
+      buffer += chunk;
+      const parts = buffer.split('\n');
+      buffer = parts.pop() || '';
+      for (const line of parts) parse(line);
+    });
+    stream.on('end', () => { if (buffer.trim()) parse(buffer); resolvePromise(entries); });
+    stream.on('error', (error) => reject(new Error(`failed to read session file: ${error.message}`)));
+  });
+}
+
 export function extractFinalizedResult(entries) {
-  if (!Array.isArray(entries) || entries.length === 0) {
-    return { text: '', stopReason: 'unknown', toolCalls: [], turns: 0 };
-  }
-
-  let lastAssistantText = '';
-  let stopReason = 'unknown';
-  let model;
-  let usage = null;
+  if (!Array.isArray(entries)) return incomplete([]);
+  const calls = new Map();
+  let finalAssistant;
   let turns = 0;
-  /** @type {ToolCallEvidence[]} */
-  const toolCalls = [];
-  let hasFinalizedAssistant = false;
-
   for (const entry of entries) {
-    if (!entry || typeof entry !== 'object') continue;
-
-    // Handle message_end events (finalized assistant messages)
-    if (entry.type === 'message_end' && entry.message) {
-      const msg = entry.message;
-      if (msg.role === 'assistant') {
-        turns++;
-        // Extract text from content
-        const textParts = [];
-        const calls = [];
-        if (Array.isArray(msg.content)) {
-          for (const part of msg.content) {
-            if (part.type === 'text' && part.text) {
-              textParts.push(part.text);
-            } else if (part.type === 'toolCall') {
-              calls.push({
-                name: part.name || 'unknown',
-                arguments: part.arguments || {},
-              });
-            }
-          }
-        }
-        if (textParts.length > 0) {
-          lastAssistantText = textParts.join('\n');
-        }
-        toolCalls.push(...calls);
-        if (msg.stopReason) stopReason = msg.stopReason;
-        if (msg.model) model = msg.model;
-        if (msg.usage) {
-          usage = { ...msg.usage };
-        }
-        hasFinalizedAssistant = true;
+    if (entry?.type !== 'message' || !entry.message || typeof entry.message !== 'object') continue;
+    const message = entry.message;
+    if (message.role === 'assistant' && typeof message.stopReason === 'string') {
+      turns++;
+      for (const part of Array.isArray(message.content) ? message.content : []) {
+        if (part?.type === 'toolCall' && typeof part.id === 'string') calls.set(part.id, { id: part.id, name: String(part.name || 'unknown'), arguments: part.arguments || {} });
       }
-      continue;
+      finalAssistant = message;
     }
-
-    // Handle regular message entries
-    if (entry.type === 'message' && entry.message) {
-      const msg = entry.message;
-      if (msg.role === 'assistant') {
-        // Only count as a turn if it has a stopReason (finalized)
-        if (msg.stopReason) {
-          turns++;
-          const textParts = [];
-          if (Array.isArray(msg.content)) {
-            for (const part of msg.content) {
-              if (part.type === 'text' && part.text) {
-                textParts.push(part.text);
-              }
-            }
-          }
-          if (textParts.length > 0) {
-            lastAssistantText = textParts.join('\n');
-          }
-          stopReason = msg.stopReason;
-          if (msg.model) model = msg.model;
-          if (msg.usage) usage = { ...msg.usage };
-          hasFinalizedAssistant = true;
-        }
-      } else if (msg.role === 'toolResult') {
-        // Attach result to the most recent matching tool call
-        const toolName = msg.toolName;
-        if (toolName) {
-          const matchingCall = [...toolCalls].reverse().find((c) => c.name === toolName && !c.result);
-          if (matchingCall) {
-            matchingCall.result = summarizeToolResult(msg);
-          }
-        }
-      }
+    if (message.role === 'toolResult' && typeof message.toolCallId === 'string') {
+      const call = calls.get(message.toolCallId);
+      if (call) call.result = summarizeToolResult(message);
     }
   }
-
-  if (!hasFinalizedAssistant) {
-    return { text: '', stopReason: 'incomplete', toolCalls, turns: 0 };
-  }
-
+  const toolCalls = [...calls.values()];
+  if (!finalAssistant) return incomplete(toolCalls);
   return {
-    text: lastAssistantText,
-    stopReason,
-    model,
-    usage,
+    text: (Array.isArray(finalAssistant.content) ? finalAssistant.content : []).filter((part) => part?.type === 'text' && typeof part.text === 'string').map((part) => part.text).join('\n'),
+    stopReason: finalAssistant.stopReason,
+    model: finalAssistant.model,
+    usage: finalAssistant.usage,
     toolCalls,
     turns,
   };
 }
 
-/**
- * Summarize a tool result message for evidence.
- * @param {Object} msg
- * @returns {Object}
- */
-function summarizeToolResult(msg) {
-  const summary = { isError: !!msg.isError };
-  if (Array.isArray(msg.content)) {
-    const textParts = msg.content
-      .filter((p) => p.type === 'text' && p.text)
-      .map((p) => p.text);
-    if (textParts.length > 0) {
-      const combined = textParts.join('\n');
-      // Truncate for evidence summary
-      summary.text = combined.length > 500 ? combined.slice(0, 500) + '...' : combined;
-    }
-  }
-  return summary;
+function incomplete(toolCalls) { return { text: '', stopReason: 'incomplete', toolCalls, turns: 0 }; }
+function summarizeToolResult(message) {
+  const text = (Array.isArray(message.content) ? message.content : []).filter((part) => part?.type === 'text' && typeof part.text === 'string').map((part) => part.text).join('\n');
+  return { isError: !!message.isError, text: text.length > 500 ? `${text.slice(0, 500)}...` : text };
 }

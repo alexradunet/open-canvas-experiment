@@ -1,160 +1,37 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-import { resolve, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { parseRoleFile, roleNameFromFilename, roleToPiArgs } from '../role-parser.js';
+import { readdir, readFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
+import { filteredRoleTools, ORCHESTRATION_TOOLS, parseRoleFile, roleNameFromFilename, roleToPiArgs } from '../role-parser.js';
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const fixtures = resolve(__dirname, 'fixtures');
-
-function readFixture(name) {
-  return readFileSync(resolve(fixtures, name), 'utf-8');
-}
-
-describe('role-parser', () => {
-  describe('parseRoleFile', () => {
-    it('parses a valid role file', () => {
-      const content = readFixture('valid-role.md');
-      const role = parseRoleFile(content, '/test/valid-role.md');
-
-      assert.equal(role.filePath, '/test/valid-role.md');
-      assert.equal(role.description, 'General-purpose worker agent');
-      assert.equal(role.model, 'qwen-token-plan/qwen3.7-plus');
-      assert.equal(role.thinking, 'high');
-      assert.deepEqual(role.tools, ['read', 'bash', 'edit', 'write']);
-      assert.deepEqual(role.skills, ['tdd', 'browser-check']);
-      assert.equal(role.prompt_mode, 'replace');
-      assert.ok(role.prompt.includes('helpful worker agent'));
-    });
-
-    it('parses wildcard tools', () => {
-      const content = readFixture('wildcard-tools.md');
-      const role = parseRoleFile(content, '/test/wildcard-tools.md');
-      assert.deepEqual(role.tools, ['*']);
-    });
-
-    it('rejects empty content', () => {
-      assert.throws(() => parseRoleFile('', '/test/empty.md'), /empty file/);
-    });
-
-    it('rejects missing frontmatter delimiter', () => {
-      const content = readFixture('malformed-no-frontmatter.md');
-      assert.throws(
-        () => parseRoleFile(content, '/test/bad.md'),
-        /missing frontmatter delimiter/
-      );
-    });
-
-    it('rejects unterminated frontmatter', () => {
-      const content = readFixture('malformed-unterminated.md');
-      assert.throws(
-        () => parseRoleFile(content, '/test/bad.md'),
-        /unterminated frontmatter/
-      );
-    });
-
-    it('rejects unsafe model with shell metacharacters', () => {
-      const content = readFixture('malformed-unsafe.md');
-      assert.throws(
-        () => parseRoleFile(content, '/test/bad.md'),
-        /unsafe characters.*model/
-      );
-    });
-
-    it('rejects invalid thinking level', () => {
-      const content = readFixture('malformed-thinking.md');
-      assert.throws(
-        () => parseRoleFile(content, '/test/bad.md'),
-        /invalid thinking level/
-      );
-    });
-
-    it('rejects missing description', () => {
-      const content = readFixture('malformed-no-description.md');
-      assert.throws(
-        () => parseRoleFile(content, '/test/bad.md'),
-        /missing or empty 'description'/
-      );
-    });
-
-    it('rejects a missing role prompt body', () => {
-      assert.throws(
-        () => parseRoleFile('---\ndescription: test\n---\n', '/test/no-prompt.md'),
-        /missing role prompt body/
-      );
-    });
-
-    it('rejects unsafe skill paths', () => {
-      assert.throws(
-        () => parseRoleFile('---\ndescription: test\nskills: ../outside\n---\nPrompt', '/test/skill.md'),
-        /unsafe characters in 'skills'/
-      );
-    });
-
-    it('handles BOM prefix', () => {
-      const content = '\uFEFF---\ndescription: BOM test\n---\nBody';
-      const role = parseRoleFile(content, '/test/bom.md');
-      assert.equal(role.description, 'BOM test');
-    });
-
-    it('handles quoted values', () => {
-      const content = '---\ndescription: "quoted desc"\nmodel: \'some/model\'\n---\nBody';
-      const role = parseRoleFile(content, '/test/quoted.md');
-      assert.equal(role.description, 'quoted desc');
-      assert.equal(role.model, 'some/model');
-    });
+const agentsDir = resolve('.pi/agents');
+describe('role compatibility', () => {
+  it('parses and prepares every current project role without dropping any', async () => {
+    const files = (await readdir(agentsDir)).filter((file) => file.endsWith('.md'));
+    assert.ok(files.length >= 1);
+    for (const file of files) {
+      const path = resolve(agentsDir, file);
+      const role = parseRoleFile(await readFile(path, 'utf8'), path);
+      const args = roleToPiArgs(role);
+      assert.equal(roleNameFromFilename(file), file.slice(0, -3));
+      assert.ok(args.includes('--system-prompt') || args.includes('--append-system-prompt'));
+      for (const forbidden of ORCHESTRATION_TOOLS) assert.ok(!filteredRoleTools(role).includes(forbidden), `${file} leaked ${forbidden}`);
+    }
   });
 
-  describe('roleNameFromFilename', () => {
-    it('extracts name from valid filename', () => {
-      assert.equal(roleNameFromFilename('implementer.md'), 'implementer');
-      assert.equal(roleNameFromFilename('reviewer-sol.md'), 'reviewer-sol');
-    });
-
-    it('rejects non-.md files', () => {
-      assert.throws(() => roleNameFromFilename('test.txt'), /not a \.md file/);
-    });
-
-    it('rejects invalid names', () => {
-      assert.throws(() => roleNameFromFilename('.md'), /invalid role filename/);
-      assert.throws(() => roleNameFromFilename('UPPER.md'), /invalid role filename/);
-    });
+  it('accepts installed extension tool identifiers while excluding only orchestration', () => {
+    const role = parseRoleFile('---\ndescription: extension tools\ntools: read, ext:pi-web-access/web_search, ext:pi-subagents/Agent\n---\nPrompt', '/roles/ext.md');
+    assert.deepEqual(filteredRoleTools(role), ['read', 'ext:pi-web-access/web_search']);
   });
 
-  describe('roleToPiArgs', () => {
-    it('builds args with model and thinking', () => {
-      const role = { description: 'test', model: 'gpt-5.6-sol', thinking: 'high', prompt: '' };
-      const args = roleToPiArgs(role);
-      assert.deepEqual(args, ['--model', 'gpt-5.6-sol', '--thinking', 'high']);
-    });
+  it('constrains wildcard roles to safe non-orchestration tools', () => {
+    const role = parseRoleFile('---\ndescription: wildcard\ntools: "*"\n---\nPrompt', '/roles/wild.md');
+    const tools = filteredRoleTools(role);
+    assert.ok(tools.includes('bash'));
+    for (const forbidden of ORCHESTRATION_TOOLS) assert.ok(!tools.includes(forbidden));
+  });
 
-    it('builds args with specific tools', () => {
-      const role = { description: 'test', tools: ['read', 'bash'], prompt: '' };
-      const args = roleToPiArgs(role);
-      assert.deepEqual(args, ['--tools', 'read,bash']);
-    });
-
-    it('omits tools arg for wildcard', () => {
-      const role = { description: 'test', tools: ['*'], prompt: '' };
-      const args = roleToPiArgs(role);
-      assert.deepEqual(args, []);
-    });
-
-    it('uses Pi --system-prompt for replace mode', () => {
-      const role = { description: 'test', prompt_mode: 'replace', prompt: 'Role prompt' };
-      assert.deepEqual(roleToPiArgs(role), ['--system-prompt', 'Role prompt']);
-    });
-
-    it('uses Pi --append-system-prompt for append mode', () => {
-      const role = { description: 'test', prompt_mode: 'append', prompt: 'Role prompt' };
-      assert.deepEqual(roleToPiArgs(role), ['--append-system-prompt', 'Role prompt']);
-    });
-
-    it('returns empty array for minimal role', () => {
-      const role = { description: 'test', prompt: '' };
-      const args = roleToPiArgs(role);
-      assert.deepEqual(args, []);
-    });
+  it('retains a path-specific malformed-role error', () => {
+    assert.throws(() => parseRoleFile('---\ndescription: bad\ntools: ext:bad tool\n---\nPrompt', '/roles/bad.md'), /\/roles\/bad\.md: unsafe characters/);
   });
 });

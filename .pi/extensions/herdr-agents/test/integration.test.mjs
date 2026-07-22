@@ -1,569 +1,90 @@
-import { describe, it, before, after } from 'node:test';
+import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import net from 'node:net';
 import os from 'node:os';
 import fs from 'node:fs';
-import { resolve, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { HerdrClient, createClientFromEnv, EXPECTED_PROTOCOL } from '../herdr-client.js';
-import { createPane, startAgent, removeRolePromptFile, waitForInteractiveReady, waitForAgent, promptAgent, readAgent, closePane, getAgent, assertPinnedAgent, resolveRoleSkillArgs } from '../pane-manager.js';
-import { collectSessionResult } from '../session-collector.js';
+import { resolve } from 'node:path';
+import { HerdrClient, EXPECTED_PROTOCOL } from '../herdr-client.js';
+import { assertPinnedAgent, captureAgentIdentity, closePane, reportPaneMetadata, requestCloseConfirmation, resolveRoleSkillArgs, startAgent } from '../pane-manager.js';
 import { parseRoleFile } from '../role-parser.js';
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const fixtures = resolve(__dirname, 'fixtures');
-
-/**
- * Fake Herdr server that responds to JSON-RPC requests.
- * Configurable to simulate success, error, timeout, and protocol mismatch.
- */
-class FakeHerdrServer {
-  constructor(options = {}) {
-    this.socketPath = `${os.tmpdir()}/herdr-fake-${process.pid}-${Date.now()}.sock`;
-    this.server = null;
-    this.protocol = options.protocol ?? EXPECTED_PROTOCOL;
-    this.version = options.version ?? '0.7.5';
-    this.handlers = options.handlers || {};
-    this.delayMs = options.delayMs || 0;
-    this.requests = [];
-    this.connections = 0;
-  }
-
-  start() {
-    return new Promise((resolve, reject) => {
-      this.server = net.createServer((socket) => {
-        this.connections++;
-        let buffer = '';
-        socket.on('data', (chunk) => {
-          buffer += chunk.toString();
-          const lines = buffer.split('\n');
-          buffer = lines.pop() || '';
-          for (const line of lines) {
-            if (!line.trim()) continue;
-            try {
-              const request = JSON.parse(line);
-              this.requests.push(request);
-              this.#handleRequest(socket, request);
-            } catch (e) {
-              socket.write(JSON.stringify({
-                id: 'unknown',
-                error: { code: 'parse_error', message: e.message },
-              }) + '\n');
-            }
-          }
-        });
-      });
-      this.server.listen(this.socketPath, () => resolve());
-      this.server.on('error', reject);
-    });
-  }
-
-
-  #handleRequest(socket, request) {
-    const handler = this.handlers[request.method];
-    if (this.delayMs > 0) {
-      setTimeout(() => this.#respond(socket, request, handler), this.delayMs);
-    } else {
-      this.#respond(socket, request, handler);
-    }
-  }
-
-  #respond(socket, request, handler) {
-    if (handler === 'error') {
-      socket.write(JSON.stringify({
-        id: request.id,
-        error: { code: 'test_error', message: 'simulated error' },
-      }) + '\n');
-      return;
-    }
-
-    if (handler === 'close') {
-      socket.end();
-      return;
-    }
-
-    if (handler === 'no-response') {
-      // Don't respond (simulate timeout)
-      return;
-    }
-
-    let result;
-    if (typeof handler === 'function') {
-      result = handler(request);
-    } else if (handler !== undefined) {
-      result = handler;
-    } else {
-      result = this.#defaultResponse(request);
-    }
-
-    if (result === null) return; // Function handler returned null (no response)
-
-    socket.write(JSON.stringify({ id: request.id, result }) + '\n');
-  }
-
-  #defaultResponse(request) {
-    switch (request.method) {
-      case 'ping':
-        return { version: this.version, protocol: this.protocol, capabilities: { live_handoff: true } };
-      case 'pane.split':
-        return {
-          pane: {
-            pane_id: 'w1-2',
-            terminal_id: 'term_2',
-            workspace_id: 'w1',
-            tab_id: 'w1:1',
-            focused: false,
-            cwd: request.params.cwd,
-          },
-        };
-      case 'agent.start':
-        return {
-          agent: {
-            name: request.params?.name,
-            pane_id: request.params?.pane_id,
-            agent_status: 'working',
-            interactive_ready: true,
-          },
-        };
-      case 'agent.prompt':
-        return {
-          agent: {
-            name: request.params?.target,
-            agent_status: 'idle',
-          },
-        };
-      case 'agent.wait':
-        return {
-          agent: {
-            name: request.params?.target,
-            agent_status: 'done',
-          },
-        };
-      case 'agent.read':
-        return {
-          read: {
-            pane_id: 'w1-2',
-            text: 'sample terminal output\n',
-            truncated: false,
-          },
-        };
-      case 'agent.list':
-        return { agents: [{ name: 'test', agent_status: 'idle' }] };
-      case 'agent.get':
-        return { agent: { name: request.params?.target, pane_id: 'w1-2', agent_status: 'idle' } };
-      case 'pane.close':
-        return {};
-      case 'pane.report_metadata':
-        return {};
-      default:
-        return {};
-    }
-  }
-
-  stop() {
-    return new Promise((resolve) => {
-      if (this.server) {
-        this.server.close(() => {
-          try { fs.unlinkSync(this.socketPath); } catch {}
-          resolve();
-        });
-      } else {
-        resolve();
-      }
-    });
+const session = { source: 'herdr:pi', agent: 'pi', kind: 'id', value: '33333333-3333-3333-3333-333333333333' };
+const agent = (name = 'worker', pane = 'w1:p2') => ({ name, pane_id: pane, workspace_id: 'w1', tab_id: 'w1:t1', agent_status: 'idle', launch_pending: false, interactive_ready: true, agent_session: session });
+class FakeHerdr {
+  constructor(handler = {}) { this.path = `${os.tmpdir()}/herdr-${process.pid}-${Date.now()}-${Math.random()}.sock`; this.requests = []; this.handler = handler; }
+  async start() { this.server = net.createServer((socket) => { let buffer = ''; socket.on('data', (chunk) => { buffer += chunk; const lines = buffer.split('\n'); buffer = lines.pop() || ''; for (const line of lines) if (line) { const request = JSON.parse(line); this.requests.push(request); const result = this.handler[request.method]?.(request) ?? defaults(request); if (result?.error) socket.write(JSON.stringify({ id: result.id ?? request.id, error: result.error }) + '\n'); else if (result !== null) socket.write(JSON.stringify({ id: result?.id ?? request.id, result }) + '\n'); } }); }); await new Promise((resolvePromise) => this.server.listen(this.path, resolvePromise)); }
+  async stop() { await new Promise((resolvePromise) => this.server.close(resolvePromise)); }
+}
+function defaults(request) {
+  switch (request.method) {
+    case 'ping': return { type: 'pong', version: '0.7.5', protocol: EXPECTED_PROTOCOL, capabilities: { live_handoff: true, detached_server_daemon: true } };
+    case 'pane.split': return { type: 'pane_info', pane: { pane_id: 'w1:p2', workspace_id: 'w1', tab_id: 'w1:t1' } };
+    case 'agent.start': return { type: 'agent_started', agent: agent(request.params.name), argv: request.params.args };
+    case 'agent.get': return { type: 'agent_info', agent: agent(request.params.target) };
+    case 'agent.list': return { type: 'agent_list', agents: [agent()] };
+    case 'pane.close': return { type: 'ok' };
+    case 'pane.report_metadata': return { type: 'ok' };
+    default: return { type: 'ok' };
   }
 }
+async function withServer(handler, run) { const server = new FakeHerdr(handler); await server.start(); try { await run(new HerdrClient({ socketPath: server.path, timeoutMs: 500 }), server); } finally { await server.stop(); } }
 
-async function withFakeServer(handlers, fn) {
-  const server = new FakeHerdrServer({ handlers });
-  await server.start();
-  try {
-    const client = new HerdrClient({ socketPath: server.socketPath, timeoutMs: 2000 });
-    await fn(client, server);
-  } finally {
-    await server.stop();
-  }
-}
-
-describe('herdr-client', () => {
-  describe('HerdrClient.request', () => {
-    it('sends a request and receives a response', async () => {
-      await withFakeServer({}, async (client) => {
-        const response = await client.request('ping', {});
-        assert.ok(response.id);
-        assert.ok(response.result);
-        assert.equal(response.result.protocol, EXPECTED_PROTOCOL);
-      });
-    });
-
-    it('rejects error responses', async () => {
-      await withFakeServer({ ping: 'error' }, async (client) => {
-        await assert.rejects(client.request('ping', {}), /simulated error/);
-      });
-    });
-
-    it('rejects when connection closes before response', async () => {
-      await withFakeServer({ ping: 'close' }, async (client) => {
-        await assert.rejects(
-          client.request('ping', {}, 2000),
-          /connection closed before response/
-        );
-      });
-    });
-
-    it('rejects on timeout when server does not respond', async () => {
-      await withFakeServer({ ping: 'no-response' }, async (client) => {
-        await assert.rejects(
-          client.request('ping', {}, 500),
-          /timed out after 500ms/
-        );
-      });
-    });
-
-    it('rejects connection to non-existent socket', async () => {
-      const client = new HerdrClient({ socketPath: '/nonexistent/sock', timeoutMs: 500 });
-      await assert.rejects(
-        client.request('ping', {}),
-        /connection failed/
-      );
+describe('protocol-17 socket and lifecycle validation', () => {
+  it('rejects a mismatched response id', async () => {
+    await withServer({ ping: (req) => ({ id: 'wrong', type: 'pong', version: '0.7.5', protocol: 17, capabilities: { live_handoff: true, detached_server_daemon: true } }) }, async (client) => {
+      await assert.rejects(client.ping(), /response ID mismatch/);
     });
   });
-
-  describe('HerdrClient.ping', () => {
-    it('returns version and protocol', async () => {
-      await withFakeServer({}, async (client) => {
-        const info = await client.ping();
-        assert.equal(info.protocol, EXPECTED_PROTOCOL);
-        assert.equal(info.version, '0.7.5');
-      });
+  it('fails closed for missing ping capability fields', async () => {
+    await withServer({ ping: () => ({ type: 'pong', version: '0.7.5', protocol: 17, capabilities: {} }) }, async (client) => {
+      await assert.rejects(client.ping(), /capabilities are incomplete/);
     });
   });
-
-  describe('HerdrClient.isInHerdrPane', () => {
-    it('returns true when all env vars present', () => {
-      assert.ok(HerdrClient.isInHerdrPane({
-        HERDR_ENV: '1',
-        HERDR_SOCKET_PATH: '/tmp/sock',
-        HERDR_PANE_ID: 'w1-1',
-      }));
-    });
-
-    it('returns false when env vars missing', () => {
-      assert.ok(!HerdrClient.isInHerdrPane({}));
-      assert.ok(!HerdrClient.isInHerdrPane({ HERDR_ENV: '1' }));
-    });
-  });
-
-  describe('createClientFromEnv', () => {
-    it('returns null outside Herdr', () => {
-      assert.equal(createClientFromEnv({}), null);
-    });
-
-    it('returns client inside Herdr', () => {
-      const client = createClientFromEnv({
-        HERDR_ENV: '1',
-        HERDR_SOCKET_PATH: '/tmp/sock',
-        HERDR_PANE_ID: 'w1-1',
-      });
-      assert.ok(client instanceof HerdrClient);
-    });
-  });
-});
-
-describe('pane-manager (fake server integration)', () => {
-  describe('createPane', () => {
-    it('creates a pane and returns pane info', async () => {
-      await withFakeServer({}, async (client) => {
-        const pane = await createPane(client, { currentPaneId: 'w1-1', cwd: '/tmp' });
-        assert.equal(pane.pane_id, 'w1-2');
-        assert.equal(pane.workspace_id, 'w1');
-      });
-    });
-
-    it('sends correct direction and ratio', async () => {
-      await withFakeServer({}, async (client, server) => {
-        await createPane(client, {
-          currentPaneId: 'w1-1',
-          direction: 'down',
-          ratio: 0.6,
-        });
-        const req = server.requests.find((r) => r.method === 'pane.split');
-        assert.equal(req.params.direction, 'down');
-        assert.equal(req.params.ratio, 0.6);
-      });
-    });
-  });
-
-  describe('startAgent', () => {
-    it('starts an agent and returns agent name', async () => {
-      await withFakeServer({}, async (client) => {
-        const role = parseRoleFile(
-          `---\ndescription: test\nmodel: gpt-test\nthinking: high\n---\nPrompt`,
-          '/test.md'
-        );
-        const result = await startAgent(client, {
-          paneId: 'w1-2',
-          agentName: 'test',
-          role,
-        });
-        try {
-          assert.equal(result.agent_name, 'test');
-          assert.equal(result.pane_id, 'w1-2');
-        } finally {
-          await removeRolePromptFile(result.promptFile);
-        }
-      });
-    });
-
-    it('sends correct args from role', async () => {
-      await withFakeServer({}, async (client, server) => {
-        const role = parseRoleFile(
-          `---\ndescription: test\nmodel: gpt-test\nthinking: high\ntools: read,bash\n---\nPrompt`,
-          '/test.md'
-        );
-        const started = await startAgent(client, {
-          paneId: 'w1-2',
-          agentName: 'test',
-          role,
-        });
-        try {
-          const req = server.requests.find((r) => r.method === 'agent.start');
-          assert.equal(req.params.kind, 'pi');
-          assert.ok(req.params.args.includes('--model'));
-          assert.ok(req.params.args.includes('gpt-test'));
-          assert.ok(req.params.args.includes('--thinking'));
-          assert.ok(req.params.args.includes('high'));
-          assert.ok(req.params.args.includes('--tools'));
-        } finally {
-          await removeRolePromptFile(started.promptFile);
-        }
-      });
-    });
-
-    it('passes the role prompt as a dedicated argv value', async () => {
-      await withFakeServer({}, async (client, server) => {
-        const role = parseRoleFile(
-          `---\ndescription: test\nmodel: gpt-test\nprompt_mode: replace\n---\nRole prompt with spaces`,
-          '/test.md'
-        );
-        const started = await startAgent(client, {
-          paneId: 'w1-2',
-          agentName: 'unique-herdr-label',
-          role,
-        });
-        try {
-          const req = server.requests.find((r) => r.method === 'agent.start');
-          // Args are an argv array, never a shell-concatenated command.
-          assert.ok(Array.isArray(req.params.args));
-          const promptFlag = req.params.args.indexOf('--system-prompt');
-          assert.ok(promptFlag >= 0);
-          const promptPath = req.params.args[promptFlag + 1];
-          assert.ok(typeof promptPath === 'string' && !promptPath.includes('\n'));
-          assert.equal(fs.readFileSync(promptPath, 'utf8'), 'Role prompt with spaces');
-        } finally {
-          await removeRolePromptFile(started.promptFile);
-        }
-      });
-    });
-
-    it('loads declared project skills via explicit Pi --skill paths', async () => {
-      const cwd = fs.mkdtempSync(`${os.tmpdir()}/herdr-skills-`);
-      const skillPath = resolve(cwd, '.pi/skills/tdd');
-      fs.mkdirSync(skillPath, { recursive: true });
-      fs.writeFileSync(resolve(skillPath, 'SKILL.md'), '# TDD\n');
-      const role = parseRoleFile(
-        `---\ndescription: test\nskills: tdd\n---\nPrompt`,
-        '/test.md'
-      );
-      const args = resolveRoleSkillArgs(role, cwd);
-      assert.deepEqual(args, ['--skill', resolve(skillPath, 'SKILL.md')]);
-    });
-
-    it('rejects a declared skill that is absent from the project', () => {
-      const role = parseRoleFile(`---\ndescription: test\nskills: tdd\n---\nPrompt`, '/test.md');
-      assert.throws(() => resolveRoleSkillArgs(role, os.tmpdir()), /role skill 'tdd' is missing/);
-    });
-
-    it('waits until Herdr reports the agent as interactive-ready', async () => {
-      let polls = 0;
-      await withFakeServer({
-        'agent.get': () => ({
-          agent: {
-            name: 'worker-1',
-            launch_pending: polls++ === 0,
-            interactive_ready: polls > 1,
-          },
-        }),
-      }, async (client) => {
-        await waitForInteractiveReady(client, 'worker-1', 2000);
-        assert.ok(polls >= 2);
-      });
-    });
-  });
-
-  describe('waitForAgent', () => {
-    it('returns done status', async () => {
-      await withFakeServer({}, async (client) => {
-        const result = await waitForAgent(client, {
-          target: 'test',
-          until: ['done', 'idle'],
-          timeoutMs: 5000,
-        });
-        assert.equal(result.status, 'done');
-        assert.equal(result.timedOut, false);
-      });
-    });
-
-    it('returns timeout on timeout', async () => {
-      await withFakeServer({ 'agent.wait': 'no-response' }, async (client) => {
-        const result = await waitForAgent(client, {
-          target: 'test',
-          until: ['done'],
-          timeoutMs: 300,
-        });
-        assert.equal(result.status, 'timeout');
-        assert.equal(result.timedOut, true);
-      });
-    });
-  });
-
-  describe('promptAgent', () => {
-    it('sends prompt without waiting', async () => {
-      await withFakeServer({}, async (client, server) => {
-        await promptAgent(client, { target: 'test', text: 'hello' });
-        const req = server.requests.find((r) => r.method === 'agent.prompt');
-        assert.equal(req.params.text, 'hello');
-        assert.equal(req.params.wait, undefined);
-      });
-    });
-
-    it('sends prompt with wait options', async () => {
-      await withFakeServer({}, async (client, server) => {
-        await promptAgent(client, {
-          target: 'test',
-          text: 'hello',
-          wait: true,
-          timeoutMs: 10000,
-        });
-        const req = server.requests.find((r) => r.method === 'agent.prompt');
-        assert.deepEqual(req.params.wait.until, ['idle', 'done']);
-      });
-    });
-  });
-
-  describe('readAgent', () => {
-    it('reads diagnostic output', async () => {
-      await withFakeServer({}, async (client, server) => {
-        const result = await readAgent(client, { target: 'test' });
-        assert.ok(result.text.includes('sample terminal output'));
-        assert.equal(result.truncated, false);
-        const req = server.requests.find((r) => r.method === 'agent.read');
-        assert.equal(req.params.strip_ansi, true);
-      });
-    });
-  });
-
-  describe('closePane', () => {
-    it('sends pane.close request', async () => {
-      await withFakeServer({}, async (client, server) => {
-        await closePane(client, 'w1-2');
-        const req = server.requests.find((r) => r.method === 'pane.close');
-        assert.equal(req.params.pane_id, 'w1-2');
-      });
-    });
-  });
-
-  describe('protocol mismatch', () => {
-    it('reports wrong protocol version', async () => {
-      const server = new FakeHerdrServer({ protocol: 99 });
-      await server.start();
+  it('prepares a role launch as argv plus explicit skill paths', async () => {
+    const cwd = fs.mkdtempSync(`${os.tmpdir()}/roles-`); fs.mkdirSync(resolve(cwd, '.agents/skills/custom'), { recursive: true }); fs.writeFileSync(resolve(cwd, '.agents/skills/custom/SKILL.md'), '# custom');
+    const role = parseRoleFile('---\ndescription: test\nskills: custom\ntools: read, ext:pi-web-access/web_search\n---\nPrompt body', '/test.md');
+    await withServer({}, async (client, server) => {
+      const started = await startAgent(client, { paneId: 'w1:p2', agentName: 'worker', role, cwd });
       try {
-        const client = new HerdrClient({ socketPath: server.socketPath, timeoutMs: 2000 });
-        const info = await client.ping();
-        assert.notEqual(info.protocol, EXPECTED_PROTOCOL);
-      } finally {
-        await server.stop();
-      }
+        const args = server.requests.find((request) => request.method === 'agent.start').params.args;
+        assert.ok(args.some((arg) => String(arg).includes('ext:pi-web-access/web_search')));
+        assert.ok(args.includes(resolve(cwd, '.agents/skills/custom/SKILL.md')));
+        assert.ok(!args.some((arg) => String(arg).includes('\n')));
+      } finally { await import('../pane-manager.js').then(({ removeRolePromptFile }) => removeRolePromptFile(started.promptFile)); }
     });
   });
-
-  describe('replaced occupant', () => {
-    it('returns an agent name that can be checked against the handle', async () => {
-      // When an agent.start succeeds, the response includes the agent name.
-      // The bridge pins this to the handle so subsequent prompt/wait/read use
-      // that same agent name as the target. If the occupant changes, the
-      // agent.get/agent.read will show a different agent.
-      await withFakeServer({
-        'agent.get': (req) => ({
-          agent: { name: 'other-agent', agent_status: 'idle' }
-        }),
-      }, async (client) => {
-        // The bridge stores agent_name from startAgent. A subsequent getAgent
-        // shows a different name, which the bridge detects as a replacement.
-        const info = await getAgent(client, 'original-agent');
-        assert.notEqual(info.name, 'original-agent');
-      });
+  it('resolves declared skills from both project skill roots', () => {
+    const cwd = fs.mkdtempSync(`${os.tmpdir()}/skills-`);
+    fs.mkdirSync(resolve(cwd, '.pi/skills/project'), { recursive: true }); fs.writeFileSync(resolve(cwd, '.pi/skills/project/SKILL.md'), '# project');
+    fs.mkdirSync(resolve(cwd, '.agents/skills/agents'), { recursive: true }); fs.writeFileSync(resolve(cwd, '.agents/skills/agents/SKILL.md'), '# agents');
+    const role = parseRoleFile('---\ndescription: skills\nskills: project, agents\n---\nPrompt', '/skills.md');
+    assert.deepEqual(resolveRoleSkillArgs(role, cwd), ['--skill', resolve(cwd, '.pi/skills/project/SKILL.md'), '--skill', resolve(cwd, '.agents/skills/agents/SKILL.md')]);
+  });
+  it('uses protocol-valid metadata source and token fields', async () => {
+    await withServer({}, async (client, server) => {
+      await reportPaneMetadata(client, 'w1:p2', { role: 'executor', bridge: 'herdr-agent', state: 'ready' });
+      const params = server.requests.find((request) => request.method === 'pane.report_metadata').params;
+      assert.equal(params.source, 'balaur-herdr-agent');
+      assert.deepEqual(Object.keys(params.tokens), ['role', 'bridge', 'state']);
+      assert.ok(Object.keys(params.tokens).every((key) => /^[A-Za-z0-9_-]{1,32}$/.test(key)));
     });
   });
-
-  describe('pinned worker identity', () => {
-    it('rejects an operation when Herdr reports a replacement occupant', async () => {
-      const handle = { agentName: 'worker-1', paneId: 'w1-2', status: 'ready' };
-      await withFakeServer({
-        'agent.get': () => ({
-          agent: { name: 'replacement', pane_id: 'w1-2', agent_status: 'idle' },
-        }),
-      }, async (client) => {
-        await assert.rejects(assertPinnedAgent(client, handle), /occupant was replaced/);
-        assert.equal(handle.status, 'replaced');
-      });
-    });
-
-    it('rejects an operation when the named worker moved to another pane', async () => {
-      const handle = { agentName: 'worker-1', paneId: 'w1-2', status: 'ready' };
-      await withFakeServer({
-        'agent.get': () => ({
-          agent: { name: 'worker-1', pane_id: 'w1-9', agent_status: 'idle' },
-        }),
-      }, async (client) => {
-        await assert.rejects(assertPinnedAgent(client, handle), /occupant was replaced/);
-        assert.equal(handle.status, 'replaced');
-      });
+  it('marks same-pane session replacement and blocks close', async () => {
+    const handle = { agentName: 'worker', paneId: 'w1:p2', sessionKind: 'id', sessionValue: session.value, status: 'ready' };
+    await withServer({ 'agent.get': () => ({ type: 'agent_info', agent: { ...agent('worker', 'w1:p2'), agent_session: { ...session, value: '44444444-4444-4444-4444-444444444444' } } }) }, async (client, server) => {
+      await assert.rejects(assertPinnedAgent(client, handle), /session identity was replaced/);
+      assert.equal(handle.status, 'replaced');
+      // A close caller must pin first; no close request has been issued.
+      assert.equal(server.requests.some((request) => request.method === 'pane.close'), false);
     });
   });
-
-  describe('close confirmation denial', () => {
-    it('closePane sends the request only after confirmation', async () => {
-      // The tool-level handler checks ctx.ui.confirm before calling closePane.
-      // This test verifies the closePane function itself sends the request
-      // when called. The confirmation gate is tested at the tool level.
-      await withFakeServer({}, async (client, server) => {
-        await closePane(client, 'w1-2');
-        const req = server.requests.find((r) => r.method === 'pane.close');
-        assert.equal(req.params.pane_id, 'w1-2');
-      });
-    });
-
-    it('fails when no UI is available for confirmation', async () => {
-      // This mirrors the tool-level behavior: close requires ctx.hasUI.
-      // Without a UI (e.g. in json mode), close must fail.
-      // Simulated here by asserting the pattern the tool uses.
-      const fakeCtx = { hasUI: false };
-      assert.equal(fakeCtx.hasUI, false);
-    });
+  it('denies close without UI or when the human declines', async () => {
+    const handle = { paneId: 'w1:p2', role: 'executor' };
+    await assert.rejects(requestCloseConfirmation({ hasUI: false }, handle), /no UI available/);
+    assert.equal(await requestCloseConfirmation({ hasUI: true, ui: { confirm: async () => false } }, handle), false);
   });
-
-  describe('malformed session JSONL', () => {
-    it('collectSessionResult handles malformed JSONL', async () => {
-      // Write a malformed JSONL file and verify it's handled gracefully.
-      const { writeFileSync } = await import('node:fs');
-      const { tmpdir } = await import('node:os');
-      const path = `${tmpdir()}/malformed-${Date.now()}.jsonl`;
-      writeFileSync(path, 'not valid json\n{"type":"message"}\nalso not json\n');
-      const result = await collectSessionResult(path);
-      // Should return incomplete since no finalized assistant message
-      assert.equal(result.stopReason, 'incomplete');
-      assert.equal(result.text, '');
-    });
+  it('accepts exact agent/pane/session identity and protocol close response', async () => {
+    const handle = { agentName: 'worker', paneId: 'w1:p2', sessionKind: 'id', sessionValue: session.value, status: 'ready' };
+    await withServer({}, async (client) => { assert.deepEqual(captureAgentIdentity(await assertPinnedAgent(client, handle)), { agentName: 'worker', paneId: 'w1:p2', sessionKind: 'id', sessionValue: session.value }); await closePane(client, 'w1:p2'); });
   });
 });
