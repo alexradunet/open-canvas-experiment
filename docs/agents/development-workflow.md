@@ -91,15 +91,15 @@ The project-local Pi extension at `.pi/extensions/herdr-agents/` starts and cont
 
 ### Role registry
 
-`.pi/agents/*.md` is the canonical role registry. The bridge supports the currently used frontmatter fields: `description`, `model`, `thinking`, `tools`, `skills`, and `prompt_mode`. Malformed or unsafe values (shell metacharacters, invalid enums) are rejected with path-specific errors. The bridge never shell-concatenates prompts or arguments; it passes argv arrays to the Herdr socket protocol.
+`.pi/agents/*.md` is the canonical role registry. The bridge supports the currently used frontmatter fields: `description`, `model`, `thinking`, `tools`, `skills`, and `prompt_mode`. It applies those settings through Pi 0.81.1 argv flags: model, thinking, tool allowlist, explicit project `--skill` paths, and `--system-prompt`/`--append-system-prompt`. Because Herdr protocol-17 rejects control characters in argv values, the role body is written to a mode-0600 temporary prompt file for Pi to read during startup, then removed after the worker is interactive-ready. Malformed or unsafe values (shell metacharacters, traversal-like skill names, invalid enums) are rejected with path-specific errors. The bridge never shell-concatenates prompts or arguments; it passes argv arrays to the Herdr socket protocol.
 
 ### Session result collection
 
-`collect` parses the finalized Pi session JSONL and returns only the last finalized assistant message with `stopReason !== "error"`. It includes tool-call evidence, usage, model, and turn count. Partial or streaming assistant output is ignored.
+`collect` parses the finalized Pi session JSONL and returns only the last finalized assistant message. It briefly retries when Herdr reports the session path before Pi creates or flushes that file; it never signals or kills the worker. It includes tool-call evidence, usage, model, and turn count; a finalized error stop reason remains explicit evidence rather than being replaced with terminal scraping. Partial or streaming assistant output is ignored.
 
 ### Handle persistence and reconciliation
 
-Worker handles are persisted in tool result `details` for session branching and reload/resume. On `session_start`, the bridge reconstructs handles from the session branch and reconciles them against the current Herdr pane list. Missing panes are marked `missing`; replaced occupants are marked `replaced`. The bridge does not silently rebind a handle to a different pane.
+Worker handles are persisted in tool result `details` for session branching and reload/resume. On `session_start`, the bridge reconstructs handles from the session branch and reconciles them against the current Herdr pane list. Missing panes are marked `missing`; replaced occupants are marked `replaced`. Before `prompt`, `wait`, `read`, or `collect`, the bridge verifies the original Herdr agent name and pane ID together. The bridge does not silently rebind a handle to a different pane.
 
 ### Output bounding
 

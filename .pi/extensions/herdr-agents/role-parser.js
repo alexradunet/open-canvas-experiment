@@ -21,7 +21,7 @@
  * @property {string} prompt        - The Markdown body (system prompt).
  */
 
-const ALLOWED_THINKING = new Set(['off', 'low', 'medium', 'high', 'max']);
+const ALLOWED_THINKING = new Set(['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
 const ALLOWED_PROMPT_MODE = new Set(['replace', 'append']);
 const TOOL_WILDCARD = '*';
 
@@ -119,7 +119,12 @@ function buildRoleConfig(fm, body, filePath) {
     throw new Error(`${filePath}: missing or empty 'description'`);
   }
 
+  if (!body.trim()) {
+    throw new Error(`${filePath}: missing role prompt body`);
+  }
+
   const config = {
+    filePath,
     description: fm.description,
     prompt: body,
   };
@@ -150,7 +155,7 @@ function buildRoleConfig(fm, body, filePath) {
         .map((t) => t.trim())
         .filter(Boolean);
       for (const tool of config.tools) {
-        assertSafeIdentifier(tool, 'tools', filePath);
+        assertSafeToolName(tool, filePath);
       }
     }
   }
@@ -162,7 +167,7 @@ function buildRoleConfig(fm, body, filePath) {
       .map((s) => s.trim())
       .filter(Boolean);
     for (const skill of config.skills) {
-      assertSafeIdentifier(skill, 'skills', filePath);
+      assertSafeSkillName(skill, filePath);
     }
   }
 
@@ -183,8 +188,20 @@ function buildRoleConfig(fm, body, filePath) {
  * Reject values containing shell metacharacters or null bytes.
  */
 function assertSafeIdentifier(value, field, filePath) {
-  if (UNSAFE_CHARS.test(value)) {
+  if (UNSAFE_CHARS.test(value) || !/^[A-Za-z0-9_.:/@+-]+$/.test(value)) {
     throw new Error(`${filePath}: unsafe characters in '${field}': ${value}`);
+  }
+}
+
+function assertSafeToolName(value, filePath) {
+  if (!/^[A-Za-z0-9_-]+$/.test(value)) {
+    throw new Error(`${filePath}: unsafe characters in 'tools': ${value}`);
+  }
+}
+
+function assertSafeSkillName(value, filePath) {
+  if (!/^[A-Za-z0-9_-]+$/.test(value)) {
+    throw new Error(`${filePath}: unsafe characters in 'skills': ${value}`);
   }
 }
 
@@ -205,6 +222,15 @@ export function roleToPiArgs(role) {
   }
   if (role.tools && role.tools.length > 0 && role.tools[0] !== TOOL_WILDCARD) {
     args.push('--tools', role.tools.join(','));
+  }
+  if (role.prompt) {
+    if (role.prompt_mode === 'append') {
+      args.push('--append-system-prompt', role.prompt);
+    } else {
+      // Pi 0.81.1: --system-prompt replaces the default prompt, while
+      // context files and skills remain appended. `replace` is the default.
+      args.push('--system-prompt', role.prompt);
+    }
   }
   return args;
 }

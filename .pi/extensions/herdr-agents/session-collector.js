@@ -46,6 +46,32 @@ export async function collectSessionResult(filePath) {
 }
 
 /**
+ * Wait briefly for Pi to flush a session file and record its finalized result.
+ * Herdr can report the session path just before Pi creates or flushes it.
+ * This retries only collection reads; it never signals, interrupts, or kills
+ * the worker.
+ *
+ * @param {string} filePath
+ * @param {number} [timeoutMs]
+ * @returns {Promise<SessionResult>}
+ */
+export async function waitForFinalizedSessionResult(filePath, timeoutMs = 10000) {
+  const deadline = Date.now() + timeoutMs;
+  let lastError;
+  while (Date.now() < deadline) {
+    try {
+      const result = await collectSessionResult(filePath);
+      if (result.stopReason !== 'incomplete') return result;
+    } catch (err) {
+      lastError = err;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  if (lastError) throw lastError;
+  return collectSessionResult(filePath);
+}
+
+/**
  * Parse JSONL entries from a file, respecting size and line limits.
  *
  * @param {string} filePath

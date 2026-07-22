@@ -18,6 +18,7 @@ describe('role-parser', () => {
       const content = readFixture('valid-role.md');
       const role = parseRoleFile(content, '/test/valid-role.md');
 
+      assert.equal(role.filePath, '/test/valid-role.md');
       assert.equal(role.description, 'General-purpose worker agent');
       assert.equal(role.model, 'qwen-token-plan/qwen3.7-plus');
       assert.equal(role.thinking, 'high');
@@ -77,6 +78,20 @@ describe('role-parser', () => {
       );
     });
 
+    it('rejects a missing role prompt body', () => {
+      assert.throws(
+        () => parseRoleFile('---\ndescription: test\n---\n', '/test/no-prompt.md'),
+        /missing role prompt body/
+      );
+    });
+
+    it('rejects unsafe skill paths', () => {
+      assert.throws(
+        () => parseRoleFile('---\ndescription: test\nskills: ../outside\n---\nPrompt', '/test/skill.md'),
+        /unsafe characters in 'skills'/
+      );
+    });
+
     it('handles BOM prefix', () => {
       const content = '\uFEFF---\ndescription: BOM test\n---\nBody';
       const role = parseRoleFile(content, '/test/bom.md');
@@ -124,6 +139,16 @@ describe('role-parser', () => {
       const role = { description: 'test', tools: ['*'], prompt: '' };
       const args = roleToPiArgs(role);
       assert.deepEqual(args, []);
+    });
+
+    it('uses Pi --system-prompt for replace mode', () => {
+      const role = { description: 'test', prompt_mode: 'replace', prompt: 'Role prompt' };
+      assert.deepEqual(roleToPiArgs(role), ['--system-prompt', 'Role prompt']);
+    });
+
+    it('uses Pi --append-system-prompt for append mode', () => {
+      const role = { description: 'test', prompt_mode: 'append', prompt: 'Role prompt' };
+      assert.deepEqual(roleToPiArgs(role), ['--append-system-prompt', 'Role prompt']);
     });
 
     it('returns empty array for minimal role', () => {

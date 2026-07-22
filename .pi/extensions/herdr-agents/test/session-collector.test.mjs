@@ -1,8 +1,10 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { resolve, dirname } from 'node:path';
+import { resolve, dirname, join } from 'node:path';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { collectSessionResult, readJsonlEntries, extractFinalizedResult } from '../session-collector.js';
+import { collectSessionResult, waitForFinalizedSessionResult, readJsonlEntries, extractFinalizedResult } from '../session-collector.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const fixtures = resolve(__dirname, 'fixtures');
@@ -172,6 +174,28 @@ describe('session-collector', () => {
       const result = await collectSessionResult(resolve(fixtures, 'partial-session.jsonl'));
       assert.equal(result.stopReason, 'incomplete');
       assert.equal(result.text, '');
+    });
+
+    it('retries until Pi creates and finalizes the reported session file', async () => {
+      const dir = await mkdtemp(join(tmpdir(), 'herdr-session-'));
+      const path = join(dir, 'late.jsonl');
+      try {
+        setTimeout(() => {
+          void writeFile(path, JSON.stringify({
+            type: 'message',
+            message: {
+              role: 'assistant',
+              content: [{ type: 'text', text: 'Final after flush' }],
+              stopReason: 'end',
+            },
+          }) + '\n');
+        }, 100);
+        const result = await waitForFinalizedSessionResult(path, 2000);
+        assert.equal(result.text, 'Final after flush');
+        assert.equal(result.stopReason, 'end');
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
     });
   });
 });

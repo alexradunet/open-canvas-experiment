@@ -27,9 +27,9 @@ import { readFile, readdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
 
 import { HerdrClient, EXPECTED_PROTOCOL } from "../herdr-client.js";
-import { parseRoleFile, roleNameFromFilename, roleToPiArgs } from "../role-parser.js";
-import { createPane, startAgent, waitForAgent, promptAgent, getAgent, reportPaneMetadata, buildWorkerEnv } from "../pane-manager.js";
-import { collectSessionResult } from "../session-collector.js";
+import { parseRoleFile, roleNameFromFilename } from "../role-parser.js";
+import { createPane, startAgent, removeRolePromptFile, waitForInteractiveReady, waitForAgent, promptAgent, getAgent, reportPaneMetadata, buildWorkerEnv } from "../pane-manager.js";
+import { waitForFinalizedSessionResult } from "../session-collector.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -133,7 +133,8 @@ async function main() {
   try {
     started = await startAgent(client, {
       paneId: pane.pane_id,
-      agentName: roleName,
+      // Herdr labels must be unique; Pi role settings are passed as argv.
+      agentName: `smoke-${roleName}-${Date.now().toString(36)}`,
       role: roleEntry.role,
       cwd,
     });
@@ -142,6 +143,19 @@ async function main() {
     process.exit(1);
   }
   console.log(`  OK: Started agent '${started.agent_name}' in pane ${started.pane_id}`);
+
+  // Wait for the agent to become interactive-ready.
+  console.log("\nStep 4b: Waiting for agent to become interactive-ready...");
+  try {
+    await waitForInteractiveReady(client, started.agent_name, 60000);
+    console.log("  OK: Agent is interactive-ready");
+  } catch (err) {
+    console.error(`  FAIL: Agent not ready: ${err.message}`);
+    console.log(`  Pane ${pane.pane_id} remains open for inspection.`);
+    process.exit(1);
+  } finally {
+    await removeRolePromptFile(started.promptFile);
+  }
 
   // Publish metadata.
   await reportPaneMetadata(client, pane.pane_id, {
@@ -197,7 +211,7 @@ async function main() {
   if (sessionPath) {
     console.log(`  Session path: ${sessionPath}`);
     try {
-      const result = await collectSessionResult(sessionPath);
+      const result = await waitForFinalizedSessionResult(sessionPath, 10000);
       console.log(`  stopReason: ${result.stopReason}`);
       console.log(`  turns: ${result.turns}`);
       if (result.text) {

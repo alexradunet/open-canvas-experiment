@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { HerdrClient, createClientFromEnv, EXPECTED_PROTOCOL } from '../herdr-client.js';
-import { createPane, startAgent, waitForAgent, promptAgent, readAgent, closePane, getAgent } from '../pane-manager.js';
+import { createPane, startAgent, removeRolePromptFile, waitForInteractiveReady, waitForAgent, promptAgent, readAgent, closePane, getAgent, assertPinnedAgent, resolveRoleSkillArgs } from '../pane-manager.js';
 import { collectSessionResult } from '../session-collector.js';
 import { parseRoleFile } from '../role-parser.js';
 
@@ -150,7 +150,7 @@ class FakeHerdrServer {
       case 'agent.list':
         return { agents: [{ name: 'test', agent_status: 'idle' }] };
       case 'agent.get':
-        return { agent: { name: request.params?.target, agent_status: 'idle' } };
+        return { agent: { name: request.params?.target, pane_id: 'w1-2', agent_status: 'idle' } };
       case 'pane.close':
         return {};
       case 'pane.report_metadata':
@@ -306,8 +306,12 @@ describe('pane-manager (fake server integration)', () => {
           agentName: 'test',
           role,
         });
-        assert.equal(result.agent_name, 'test');
-        assert.equal(result.pane_id, 'w1-2');
+        try {
+          assert.equal(result.agent_name, 'test');
+          assert.equal(result.pane_id, 'w1-2');
+        } finally {
+          await removeRolePromptFile(result.promptFile);
+        }
       });
     });
 
@@ -317,35 +321,82 @@ describe('pane-manager (fake server integration)', () => {
           `---\ndescription: test\nmodel: gpt-test\nthinking: high\ntools: read,bash\n---\nPrompt`,
           '/test.md'
         );
-        await startAgent(client, {
+        const started = await startAgent(client, {
           paneId: 'w1-2',
           agentName: 'test',
           role,
         });
-        const req = server.requests.find((r) => r.method === 'agent.start');
-        assert.equal(req.params.kind, 'pi');
-        assert.ok(req.params.args.includes('--model'));
-        assert.ok(req.params.args.includes('gpt-test'));
-        assert.ok(req.params.args.includes('--thinking'));
-        assert.ok(req.params.args.includes('high'));
-        assert.ok(req.params.args.includes('--tools'));
+        try {
+          const req = server.requests.find((r) => r.method === 'agent.start');
+          assert.equal(req.params.kind, 'pi');
+          assert.ok(req.params.args.includes('--model'));
+          assert.ok(req.params.args.includes('gpt-test'));
+          assert.ok(req.params.args.includes('--thinking'));
+          assert.ok(req.params.args.includes('high'));
+          assert.ok(req.params.args.includes('--tools'));
+        } finally {
+          await removeRolePromptFile(started.promptFile);
+        }
       });
     });
 
-    it('does not shell-concatenate args', async () => {
+    it('passes the role prompt as a dedicated argv value', async () => {
       await withFakeServer({}, async (client, server) => {
         const role = parseRoleFile(
-          `---\ndescription: test\nmodel: gpt-test\n---\nPrompt`,
+          `---\ndescription: test\nmodel: gpt-test\nprompt_mode: replace\n---\nRole prompt with spaces`,
           '/test.md'
         );
-        await startAgent(client, {
+        const started = await startAgent(client, {
           paneId: 'w1-2',
-          agentName: 'test',
+          agentName: 'unique-herdr-label',
           role,
         });
-        const req = server.requests.find((r) => r.method === 'agent.start');
-        // Args is an array, not a string
-        assert.ok(Array.isArray(req.params.args));
+        try {
+          const req = server.requests.find((r) => r.method === 'agent.start');
+          // Args are an argv array, never a shell-concatenated command.
+          assert.ok(Array.isArray(req.params.args));
+          const promptFlag = req.params.args.indexOf('--system-prompt');
+          assert.ok(promptFlag >= 0);
+          const promptPath = req.params.args[promptFlag + 1];
+          assert.ok(typeof promptPath === 'string' && !promptPath.includes('\n'));
+          assert.equal(fs.readFileSync(promptPath, 'utf8'), 'Role prompt with spaces');
+        } finally {
+          await removeRolePromptFile(started.promptFile);
+        }
+      });
+    });
+
+    it('loads declared project skills via explicit Pi --skill paths', async () => {
+      const cwd = fs.mkdtempSync(`${os.tmpdir()}/herdr-skills-`);
+      const skillPath = resolve(cwd, '.pi/skills/tdd');
+      fs.mkdirSync(skillPath, { recursive: true });
+      fs.writeFileSync(resolve(skillPath, 'SKILL.md'), '# TDD\n');
+      const role = parseRoleFile(
+        `---\ndescription: test\nskills: tdd\n---\nPrompt`,
+        '/test.md'
+      );
+      const args = resolveRoleSkillArgs(role, cwd);
+      assert.deepEqual(args, ['--skill', resolve(skillPath, 'SKILL.md')]);
+    });
+
+    it('rejects a declared skill that is absent from the project', () => {
+      const role = parseRoleFile(`---\ndescription: test\nskills: tdd\n---\nPrompt`, '/test.md');
+      assert.throws(() => resolveRoleSkillArgs(role, os.tmpdir()), /role skill 'tdd' is missing/);
+    });
+
+    it('waits until Herdr reports the agent as interactive-ready', async () => {
+      let polls = 0;
+      await withFakeServer({
+        'agent.get': () => ({
+          agent: {
+            name: 'worker-1',
+            launch_pending: polls++ === 0,
+            interactive_ready: polls > 1,
+          },
+        }),
+      }, async (client) => {
+        await waitForInteractiveReady(client, 'worker-1', 2000);
+        assert.ok(polls >= 2);
       });
     });
   });
@@ -451,6 +502,32 @@ describe('pane-manager (fake server integration)', () => {
         // shows a different name, which the bridge detects as a replacement.
         const info = await getAgent(client, 'original-agent');
         assert.notEqual(info.name, 'original-agent');
+      });
+    });
+  });
+
+  describe('pinned worker identity', () => {
+    it('rejects an operation when Herdr reports a replacement occupant', async () => {
+      const handle = { agentName: 'worker-1', paneId: 'w1-2', status: 'ready' };
+      await withFakeServer({
+        'agent.get': () => ({
+          agent: { name: 'replacement', pane_id: 'w1-2', agent_status: 'idle' },
+        }),
+      }, async (client) => {
+        await assert.rejects(assertPinnedAgent(client, handle), /occupant was replaced/);
+        assert.equal(handle.status, 'replaced');
+      });
+    });
+
+    it('rejects an operation when the named worker moved to another pane', async () => {
+      const handle = { agentName: 'worker-1', paneId: 'w1-2', status: 'ready' };
+      await withFakeServer({
+        'agent.get': () => ({
+          agent: { name: 'worker-1', pane_id: 'w1-9', agent_status: 'idle' },
+        }),
+      }, async (client) => {
+        await assert.rejects(assertPinnedAgent(client, handle), /occupant was replaced/);
+        assert.equal(handle.status, 'replaced');
       });
     });
   });

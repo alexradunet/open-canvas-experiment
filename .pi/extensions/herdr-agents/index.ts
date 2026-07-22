@@ -11,8 +11,7 @@
 
 import { readFile, readdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { resolve, join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
+import { resolve, join } from "node:path";
 import { Type } from "typebox";
 import { StringEnum } from "@earendil-works/pi-ai";
 import {
@@ -31,37 +30,31 @@ import {
 import {
   parseRoleFile,
   roleNameFromFilename,
-  roleToPiArgs,
   type RoleConfig,
 } from "./role-parser.js";
 import {
   createPane,
   startAgent,
+  removeRolePromptFile,
+  waitForInteractiveReady,
   waitForAgent,
   promptAgent,
   readAgent,
   listAgents,
-  getAgent,
+  assertPinnedAgent,
   closePane,
   reportPaneMetadata,
   buildWorkerEnv,
 } from "./pane-manager.js";
-import { collectSessionResult } from "./session-collector.js";
+import { waitForFinalizedSessionResult } from "./session-collector.js";
 import {
   createHandleStore,
   createHandle,
-  addHandle,
-  updateHandle,
-  removeHandle,
-  getHandle,
   listHandles,
-  reconcileHandles,
   serializeStore,
   deserializeStore,
   type WorkerHandle,
 } from "./handle-store.js";
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const ActionSchema = StringEnum([
   "start",
@@ -323,12 +316,23 @@ export default function (pi: ExtensionAPI) {
     });
 
     // Start an interactive Pi agent in the new pane.
+    // Use a unique agent name to avoid collisions with existing workers.
+    const agentName = `${params.role}-${Date.now().toString(36)}`;
     const started = await startAgent(client, {
       paneId: pane.pane_id,
-      agentName: params.role,
+      agentName,
       role: roleEntry.role,
       cwd: ctx?.cwd || process.cwd(),
     });
+
+    // Return only once the interactive worker is actually ready, not merely
+    // when Herdr has accepted the launch request. Pi reads the prompt file
+    // during startup, so remove it only after this readiness boundary.
+    try {
+      await waitForInteractiveReady(client, started.agent_name, 60000);
+    } finally {
+      await removeRolePromptFile(started.promptFile);
+    }
 
     // Create a stable handle.
     let handle = createHandle({
@@ -384,17 +388,12 @@ export default function (pi: ExtensionAPI) {
     let occupant = handle.agentName;
     try {
       if (handle.agentName) {
-        const agent = await getAgent(client, handle.agentName);
+        const agent = await assertPinnedAgent(client, handle);
         agentStatus = agent?.agent_status || "unknown";
-        // Detect replaced occupant.
-        if (agent?.name && agent.name !== handle.agentName) {
-          handle.status = "replaced";
-          occupant = agent.name;
-        }
       }
     } catch {
-      // Can't reach agent — mark as missing if not already.
-      if (handle.status !== "missing") {
+      // Preserve a detected replacement; otherwise the agent is missing.
+      if (handle.status !== "replaced") {
         handle.status = "missing";
       }
     }
@@ -422,6 +421,7 @@ export default function (pi: ExtensionAPI) {
     if (!handle.agentName) throw new Error("worker has no agent name");
 
     const client = makeClient();
+    await assertPinnedAgent(client, handle);
     const result = await waitForAgent(client, {
       target: handle.agentName,
       until: ["idle", "done"],
@@ -457,6 +457,7 @@ export default function (pi: ExtensionAPI) {
     if (!handle.agentName) throw new Error("worker has no agent name");
 
     const client = makeClient();
+    await assertPinnedAgent(client, handle);
     const result = await readAgent(client, {
       target: handle.agentName,
       source: "recent",
@@ -484,6 +485,7 @@ export default function (pi: ExtensionAPI) {
     if (!handle.agentName) throw new Error("worker has no agent name");
 
     const client = makeClient();
+    await assertPinnedAgent(client, handle);
     // Prompt without waiting — return immediately.
     const result = await promptAgent(client, {
       target: handle.agentName,
@@ -509,14 +511,15 @@ export default function (pi: ExtensionAPI) {
     // The authoritative result comes from the finalized Pi session JSONL.
     // We need the session file path. Herdr's agent.get may report it via
     // agent_session_path, but the bridge also tries to discover it.
+    const client = makeClient();
+    await assertPinnedAgent(client, handle);
     let sessionPath = handle.sessionPath;
 
     if (!sessionPath) {
       // Try to get the session path from the agent info.
       try {
-        const client = makeClient();
         if (handle.agentName) {
-          const agent = await getAgent(client, handle.agentName);
+          const agent = await assertPinnedAgent(client, handle);
           // Herdr's AgentInfo has agent_session which has value (path or id).
           if (agent?.agent_session?.value) {
             sessionPath = agent.agent_session.value;
@@ -535,7 +538,7 @@ export default function (pi: ExtensionAPI) {
       );
     }
 
-    const result = await collectSessionResult(sessionPath);
+    const result = await waitForFinalizedSessionResult(sessionPath, 10000);
 
     if (result.stopReason === "incomplete") {
       return {
