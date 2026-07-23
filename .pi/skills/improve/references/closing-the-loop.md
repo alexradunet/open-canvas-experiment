@@ -47,9 +47,12 @@ The founding rule survives unchanged: **the advisor never edits source code.** I
 
 If reviews find fixable gaps:
 
-1. Start a **fresh** implementer worker with the full issue, worktree path, actionable findings, and current diff.
-2. Do not resume a worker that has already completed — start a new one.
-3. Maximum two revision cycles, then stop and report blocked.
+1. **Re-gate the worktree.** Launch or focus a lead Pi session whose `ctx.cwd` is the exact assigned non-main worktree. Verify branch, worktree path, and clean status. `herdr_agent start` inherits the lead `ctx.cwd`.
+2. Start a **fresh** implementer worker with the full issue, worktree path, actionable findings, and current diff.
+3. Do not resume a worker that has already completed — start a new one.
+4. Maximum two revision cycles, then stop and report blocked.
+
+Each revision cycle repeats the full ctx.cwd/worktree/branch/clean gate before the fresh implementer — the same gate as the initial handoff.
 
 ### Verdict
 

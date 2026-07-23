@@ -1,5 +1,5 @@
 ---
-description: Implementation reviewer (qwen3.8-max-preview, high thinking) — reviews an executor's diff against the plan like a tech lead. Run in parallel with reviewer-sol; both verdicts are compared.
+description: Implementation reviewer (qwen3.8-max-preview, high thinking) — Review A provider fallback. Used only when reviewer-sol is unavailable due to provider failure, rate limiting, or exhausted quota.
 model: qwen-token-plan/qwen3.8-max-preview
 thinking: high
 tools: read, bash, grep, find, ls
@@ -30,4 +30,4 @@ ISSUES: (if REVISE or BLOCK) specific, actionable items
 NOTES: anything the orchestrator should know
 ```
 
-You are running in parallel with reviewer-sol. You will not see its verdict. Give your own independent assessment.
+You are the Review A provider fallback reviewer. The primary is reviewer-sol (GPT 5.6 Sol). You are started only when the primary is unavailable. Give your own independent assessment.

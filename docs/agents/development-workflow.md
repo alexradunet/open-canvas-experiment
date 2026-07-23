@@ -30,6 +30,10 @@ Fallbacks are only for provider failure, rate limiting, exhausted quota, or a fa
 
 Before relying on Review B, run a harmless GLM-5.2 probe that searches and reads files and runs `git status --short` at `max` thinking. Use `reviewer-terra` if tool calling or thinking propagation fails.
 
+## Worktree context gate (applies to every worker start)
+
+Before **every** `herdr_agent start` call — implementer, correction implementer, or reviewer — the lead Pi session must have its `ctx.cwd` set to the exact assigned non-main worktree, and the lead must freshly verify worktree path, branch, and clean status (`git -C <worktree> status --short` is empty). `herdr_agent start` inherits the lead's `ctx.cwd`, so the worker spawns inside the correct worktree only when the lead session is already focused there. This gate is not cached or assumed from a prior step; revalidate it each time.
+
 ## Issue to pull request
 
 When directed to implement an eligible issue, the human-steered lead:
@@ -37,14 +41,14 @@ When directed to implement an eligible issue, the human-steered lead:
 1. Reads the complete issue, comments, labels, linked specs, glossary, relevant ADRs, and code.
 2. Confirms `ready-for-agent`, unless the user explicitly overrides the gate.
 3. Records the base SHA and creates `agent/<issue>-<slug>` at `/tmp/balaur-workers/<issue>-<slug>` with `git worktree add`.
-4. Launches or focuses a lead Pi session whose `ctx.cwd` is that exact assigned worktree before starting any worker. `herdr_agent start` inherits the lead's `ctx.cwd`, so the worker spawns inside the correct worktree only when the lead session is already focused there.
+4. Applies the [worktree context gate](#worktree-context-gate-applies-to-every-worker-start): launches or focuses a lead Pi session whose `ctx.cwd` is that exact assigned non-main worktree, then freshly verifies worktree path, branch, and clean status before starting any worker.
 5. Starts a visible implementer worker: `herdr_agent start` with the `implementer` role. The call waits for interactive readiness and session identity, then returns a stable handle in `idle` state.
 6. Sends the task with `herdr_agent prompt` using the handle, the absolute worktree path, acceptance criteria, constraints, and required checks. Prompt admission requires exact `idle` or `blocked` status.
 7. Monitors with `herdr_agent status` and `herdr_agent wait`. While the worker is working, the human focuses the visible pane and steers or intervenes through the Pi UI (interrupt, corrective input when idle, `/model` and `/settings` as supported). `herdr_agent prompt` is admitted only from exact `idle` or `blocked` status; use `status`, `wait`, then `collect` for the result.
 8. Collects the authoritative result with `herdr_agent collect`; terminal reads via `herdr_agent read` are diagnostic only.
 9. Inspects the actual diff and command evidence from the collected result.
 10. Starts Review A and Review B as separate visible workers in parallel against the complete base-to-branch diff; neither receives the other's output.
-11. Collects both reviews. If material findings remain, starts a fresh implementer worker with the full issue, worktree path, findings, and current diff. At most two revision cycles are allowed.
+11. Collects both reviews. If material findings remain, re-applies the [worktree context gate](#worktree-context-gate-applies-to-every-worker-start) (re-verify `ctx.cwd`, branch, clean), then starts a fresh implementer worker with the full issue, worktree path, findings, and current diff. At most two revision cycles are allowed.
 12. Stops and reports a blocked state if material findings remain after revision cycles; never weakens the gate.
 13. Runs final checks, pushes only the non-main branch, and opens—but never merges—a pull request linking the issue.
 14. Inspects retained pane output, then closes each worker pane manually.
@@ -127,9 +131,9 @@ Herdr protocol 17 has exactly five authoritative agent statuses: `idle`, `workin
 
 ### Role registry
 
-`.pi/agents/*.md` is the canonical role registry. The bridge supports exactly these frontmatter fields: `description`, `model`, `thinking`, `tools`, `skills`, and `prompt_mode`, including extension tool IDs such as `ext:pi-web-access/web_search`. Any other key is rejected with the role path and key name rather than silently ignored. In particular, `isolation: worktree` is intentionally unsupported: `executor.md` and `executor-qwen.md` cannot be started through this Stage 1 bridge because safe worktree lifecycle is out of scope. The dedicated `herdr-smoke.md` role uses only supported fields and a read-only tool allowlist.
+`.pi/agents/*.md` is the canonical role registry. The bridge supports exactly these frontmatter fields: `description`, `model`, `thinking`, `tools`, `skills`, and `prompt_mode`, including extension tool IDs such as `ext:pi-web-access/web_search`. Any other key is rejected with the role path and key name rather than silently ignored. In particular, `isolation: worktree` metadata is unsupported by the bridge; executor roles (`executor.md`, `executor-qwen.md`) are manually assigned by the human lead and self-verify their worktree context through the [worktree context gate](#worktree-context-gate-applies-to-every-worker-start). The dedicated `herdr-smoke.md` role uses only supported fields and a read-only tool allowlist.
 
-The bridge applies supported settings through Pi 0.81.1 argv flags: model, thinking, explicit non-empty allowlists, `--no-tools` for omitted or filtered-empty lists, wildcard `--exclude-tools`, and explicit `--skill` paths from either `.pi/skills/` or `.agents/skills/`. Pi CHANGELOG #287 confirms `--system-prompt` accepts a file path, so because Herdr protocol-17 rejects control characters in argv values the role body is written to a mode-0600 temporary prompt file, preserving `replace` or `append` semantics, then removed after interactive-ready.
+The bridge applies supported settings through Pi 0.81.1 argv flags: model, thinking, explicit non-empty allowlists, `--no-tools` for omitted or filtered-empty lists, wildcard `--exclude-tools`, and explicit `--skill` paths from `.pi/skills/`. Pi CHANGELOG #287 confirms `--system-prompt` accepts a file path, so because Herdr protocol-17 rejects control characters in argv values the role body is written to a mode-0600 temporary prompt file, preserving `replace` or `append` semantics, then removed after interactive-ready.
 
 ### Session result collection
 
