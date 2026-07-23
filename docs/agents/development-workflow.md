@@ -38,15 +38,16 @@ When directed to implement an eligible issue, the human-steered lead:
 1. Reads the complete issue, comments, labels, linked specs, glossary, relevant ADRs, and code.
 2. Confirms `ready-for-agent`, unless the user explicitly overrides the gate.
 3. Records the base SHA and creates `agent/<issue>-<slug>` at `/tmp/balaur-workers/<issue>-<slug>` with `git worktree add`.
-4. Starts a visible implementer worker: `herdr_agent start` with the `implementer` role and the absolute worktree path, acceptance criteria, constraints, and required checks in the prompt.
-5. Monitors with `herdr_agent status` and `herdr_agent wait`; the human may focus the pane, steer with `herdr_agent prompt`, change model or settings, or interrupt at any time.
-6. Collects the authoritative result with `herdr_agent collect`; terminal reads via `herdr_agent read` are diagnostic only.
-7. Inspects the actual diff and command evidence from the collected result.
-8. Starts Review A and Review B as separate visible workers in parallel against the complete base-to-branch diff; neither receives the other's output.
-9. Collects both reviews. If material findings remain, starts a fresh implementer worker with the full issue, worktree path, findings, and current diff. At most two revision cycles are allowed.
-10. Stops and reports a blocked state if material findings remain after revision cycles; never weakens the gate.
-11. Runs final checks, pushes only the non-main branch, and opens—but never merges—a pull request linking the issue.
-12. Inspects retained pane output, then closes each worker pane manually.
+4. Starts a visible implementer worker: `herdr_agent start` with the `implementer` role. The call waits for interactive readiness and session identity, then returns a stable handle in `idle` state.
+5. Sends the task with `herdr_agent prompt` using the handle, the absolute worktree path, acceptance criteria, constraints, and required checks. Prompt admission requires exact `idle` or `blocked` status.
+6. Monitors with `herdr_agent status` and `herdr_agent wait`; the human may focus the pane, steer with `herdr_agent prompt`, change model or settings, or interrupt at any time.
+7. Collects the authoritative result with `herdr_agent collect`; terminal reads via `herdr_agent read` are diagnostic only.
+8. Inspects the actual diff and command evidence from the collected result.
+9. Starts Review A and Review B as separate visible workers in parallel against the complete base-to-branch diff; neither receives the other's output.
+10. Collects both reviews. If material findings remain, starts a fresh implementer worker with the full issue, worktree path, findings, and current diff. At most two revision cycles are allowed.
+11. Stops and reports a blocked state if material findings remain after revision cycles; never weakens the gate.
+12. Runs final checks, pushes only the non-main branch, and opens—but never merges—a pull request linking the issue.
+13. Inspects retained pane output, then closes each worker pane manually.
 
 One focused task per worker prompt. A fresh visible implementer handles correction work; a separate visible reviewer handles review. Parallel workers are allowed only for independent read-only work or separate worktrees; workers never edit the same checkout concurrently. If a worker can no longer be resumed, start a fresh one with the full context. Never continue implementation in the main checkout.
 
@@ -96,13 +97,13 @@ The project-local Pi extension at `.pi/extensions/herdr-agents/` starts and cont
 - The `herdr_agent` tool is **inactive inside worker sessions**. The extension returns early when `BALAUR_WORKER=1` is set, so delegated workers cannot spawn orchestration tools or recurse.
 - The tool **fails closed** outside a Herdr pane: it registers only when `HERDR_ENV=1`, `HERDR_SOCKET_PATH`, and `HERDR_PANE_ID` are all present.
 - It checks protocol 17 plus required server capabilities on `start` and rejects on mismatch.
-- Explicit role tool lists are allowlists with `herdr_agent`, `balaur_workflow`, `Agent`, `get_subagent_result`, `steer_subagent`, and `ext:pi-subagents/Agent` removed. Omitted or filtered-empty lists launch with Pi `--no-tools`; a role using `tools: "*"` retains Pi wildcard semantics and receives those same IDs through Pi `--exclude-tools`.
+- Explicit role tool lists are allowlists with `herdr_agent` removed by the role parser. Omitted or filtered-empty lists launch with Pi `--no-tools`; a role using `tools: "*"` retains Pi wildcard semantics and receives `herdr_agent` through Pi `--exclude-tools`. The `BALAUR_WORKER=1` environment variable prevents the extension from registering inside worker sessions, so delegated workers cannot spawn orchestration tools or recurse.
 
 ### Actions
 
 | Action | Purpose |
 |---|---|
-| `start` | Split the lead pane, durably record a provisional handle before launch completion, start an interactive Pi worker using a `.pi/agents/*.md` role, and return a stable handle immediately. Does not wait for task completion; uncertain launch recovery is through `status`. |
+| `start` | Split the lead pane, durably record a provisional handle before launch completion, start an interactive Pi worker using a `.pi/agents/*.md` role, wait for interactive readiness and session identity, and return a stable handle in `idle` state. Does not accept a prompt; use `prompt` for task input. Uncertain launch recovery is through `status`. |
 | `list` | List active worker handles. |
 | `status` | Inspect a worker; detects replaced occupants. Only authoritative `agent_not_found` plus a successful inventory reconciliation can mark a handle `missing` or `replaced`; transient transport/protocol failures preserve the prior state and throw. |
 | `wait` | Block until the worker reaches `idle`, `done`, or `blocked`. `blocked` is a settled actionable result; typed remote wait timeouts report a timeout and never kill the worker, while transport timeouts throw. |

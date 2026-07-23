@@ -11,7 +11,7 @@ Issues and PRDs for this repository live in [GitHub Issues](https://github.com/a
 - Apply or remove labels: `gh issue edit <number> --add-label "..."` or `--remove-label "..."`.
 - Close: `gh issue close <number> --comment "..."`.
 
-Use temporary files outside the repository for multiline bodies when shell quoting would be fragile. Triage comments must carry the AI disclaimer required by the `triage` skill.
+Use temporary files outside the repository for multiline bodies when shell quoting would be fragile.
 
 ## Pull requests as a triage surface
 
@@ -27,4 +27,4 @@ When a skill says to publish to the issue tracker, create a GitHub issue. When a
 
 An issue labelled `ready-for-agent` is eligible for the visible-worker issue-to-PR workflow in `docs/agents/development-workflow.md`. User direction may explicitly override the label gate for one issue.
 
-The human-steered lead starts visible workers that create an isolated worktree, branch, commits, push that non-main branch, and open a pull request. Workers must never merge the pull request or push directly to `main`.
+The human-steered lead creates the worktree and branch, starts visible workers, integrates results, pushes the non-main branch, and opens the pull request. Workers only inspect, edit, test, and commit inside their assigned worktree when explicitly directed by the lead. Workers must never merge the pull request or push directly to `main`.

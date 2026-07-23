@@ -6,7 +6,7 @@ The engineering skills use five canonical state roles. Each role maps directly t
 |---|---|---|
 | `needs-triage` | `needs-triage` | Maintainer evaluation is required |
 | `needs-info` | `needs-info` | Waiting for specific reporter information |
-| `ready-for-agent` | `ready-for-agent` | Fully specified and eligible for autonomous issue-to-PR work |
+| `ready-for-agent` | `ready-for-agent` | Fully specified and eligible for the human-steered visible-worker issue-to-PR flow |
 | `ready-for-human` | `ready-for-human` | Requires human judgment or implementation |
 | `wontfix` | `wontfix` | Will not be actioned |
 
